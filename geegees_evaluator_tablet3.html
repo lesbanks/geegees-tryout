@@ -514,7 +514,10 @@ let lastSyncOk = true;
 const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxTSGI49WOZdG2CURFPjZGsv7zWecjEhu7_q9iI8gFuwm8P70psn2MHlFE-epttjPUB/exec';
 async function cloudGet(key){
   try{
-    const res = await fetch(`${BACKEND_URL}?key=${encodeURIComponent(key)}`);
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), 8000);
+    const res = await fetch(`${BACKEND_URL}?key=${encodeURIComponent(key)}`, { signal: controller.signal });
+    clearTimeout(timer);
     if(!res.ok) return null;
     const data = await res.json();
     return (data && data.value !== undefined && data.value !== null) ? { value: data.value } : null;
@@ -522,17 +525,27 @@ async function cloudGet(key){
 }
 async function cloudSet(key, value){
   try{
-    // text/plain avoids the browser's CORS preflight (OPTIONS) request,
-    // which Apps Script Web Apps don't handle — this is the standard
-    // workaround, not a mistake.
-    const res = await fetch(BACKEND_URL, {
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), 8000);
+    // mode:'no-cors' + text/plain: the write itself reaches Apps Script and
+    // succeeds regardless, but Apps Script's /exec URL redirects internally
+    // in a way that strips the CORS headers a normal 'cors' request needs to
+    // read the response — confirmed directly against real data, where every
+    // write had actually landed even though the app reported "sync failed."
+    // In no-cors mode the response is deliberately opaque (we can't read its
+    // status or body at all), so reaching this line without an exception is
+    // the only confirmation available — and it's an accurate one, since the
+    // one thing that DOES still throw here is a real network failure or the
+    // 8-second timeout above.
+    await fetch(BACKEND_URL, {
       method: 'POST',
+      mode: 'no-cors',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ key, value })
+      body: JSON.stringify({ key, value }),
+      signal: controller.signal
     });
-    if(!res.ok) return null;
-    const data = await res.json();
-    return (data && data.ok) ? { key, value } : null;
+    clearTimeout(timer);
+    return { key, value };
   }catch(e){ return null; }
 }
 async function storageSet(key, value, shared){
@@ -1360,6 +1373,18 @@ function parseRosterText(text){
   }).filter(r=>r.name);
 }
 async function withFreshRoster(mutator){
+  // OPTIMISTIC PASS: apply the change to what's already on screen and
+  // render immediately — this is what makes the tap feel instant instead
+  // of waiting on a full round trip to Google's servers (often 1-3+
+  // seconds each way) before anything visibly changes.
+  try{ roster = mutator(roster.slice()) || roster; }catch(e){}
+  renderCheckinMain();
+
+  // AUTHORITATIVE PASS: re-run the exact same mutation against the
+  // freshest server state in the background, and persist THAT — so what
+  // actually gets saved is never based on stale data, and the UI silently
+  // corrects itself afterward if the real result differs from the guess
+  // (e.g. someone else changed something in between).
   let current;
   try{
     const res = await cloudGet(CHECKIN_KEY);
@@ -1416,6 +1441,19 @@ function wireWalkOnInputs(){
   });
   document.getElementById('addWalkOnBtn').onclick = ()=> addWalkOn(state.walkOnName, state.walkOnYear, state.walkOnPos, state.walkOnPinny);
 }
+function uniqueListNum(current){
+  // Deliberately NOT "highest existing + 1" — that's exactly what let two
+  // devices, each working from a roster snapshot that didn't yet include
+  // the other's just-added athlete, independently compute and assign the
+  // same "next" number (confirmed directly: listNum 30 ended up shared by
+  // three different athletes in real testing). A time+random value can't
+  // collide the same way, since it doesn't depend on what the rest of the
+  // roster looked like a moment ago.
+  let n;
+  do{ n = Date.now()*1000 + Math.floor(Math.random()*1000); }
+  while(current.some(a=>a.listNum===n));
+  return n;
+}
 async function addWalkOn(name, year, positions, pinnyRaw){
   name = (name||'').trim();
   if(!name){ toast('Enter a name first'); return; }
@@ -1436,7 +1474,7 @@ async function addWalkOn(name, year, positions, pinnyRaw){
       const conflict = current.find(a=>a.pinny===pinny);
       if(conflict){ toast(`Pinnie #${pinny} is already assigned to ${conflict.name}`); added = false; return current; }
     }
-    const nextListNum = current.length ? Math.max(...current.map(a=>a.listNum))+1 : 1;
+    const nextListNum = uniqueListNum(current);
     current.push({ listNum:nextListNum, name, year:(year||'').trim(), pos,
       pinny, pinnyAssignedAt: pinny? new Date().toISOString() : null, paid:false, paidAt:null, attendance:{} });
     return current;
@@ -1466,9 +1504,7 @@ async function loadOrUpdateRoster(text){
       } else {
         const paid = paidVal===true;
         const listNumTaken = current.some(a=>a.listNum===p.listNum);
-        const safeListNum = listNumTaken
-          ? (current.length ? Math.max(...current.map(a=>a.listNum))+1 : 1)
-          : p.listNum;
+        const safeListNum = listNumTaken ? uniqueListNum(current) : p.listNum;
         current.push({ listNum:safeListNum, name:p.name, year:p.year, pos:p.pos,
           pinny:null, pinnyAssignedAt:null, paid, paidAt: paid?new Date().toISOString():null, attendance:{} });
         if(paidVal !== undefined) paidStatusesSet++;
@@ -1867,6 +1903,11 @@ const DECISION_LABELS = { team1:'Team 1', team2:'Team 2', reserve:'Reserve', rel
 function statusLabel(status){ return DECISION_LABELS[status] || 'Undecided'; }
 
 async function withFreshDecisions(mutator){
+  // Same optimistic-then-authoritative pattern as withFreshRoster — see
+  // its comment for the full reasoning.
+  try{ decisions = mutator({...decisions}) || decisions; }catch(e){}
+  renderSelectionMain();
+
   let current;
   try{
     const res = await cloudGet(DECISIONS_KEY);

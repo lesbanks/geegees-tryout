@@ -1,0 +1,2314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Gee-Gees Tryout — Evaluator Console</title>
+<style>
+  :root{
+    --garnet:#7A1F3D;
+    --garnet-dark:#5A1630;
+    --ink:#211C1F;
+    --paper:#F3EFE8;
+    --card:#FFFFFF;
+    --line:#DAD2C6;
+    --turf:#2F6B4F;
+    --turf-dark:#1F4E38;
+    --flag:#B23A48;
+    --gold:#B98A2E;
+    --grey:#8A8478;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-variant-numeric:tabular-nums;}
+  .app{max-width:920px;margin:0 auto;padding-bottom:80px;}
+
+  /* HEADER */
+  header{background:var(--garnet);color:#fff;padding:14px 16px 0 16px;position:sticky;top:0;z-index:20;
+    box-shadow:0 2px 10px rgba(0,0,0,.15);}
+  .brand{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:6px;}
+  .brand h1{font-size:17px;margin:0;font-weight:700;letter-spacing:.2px;}
+  .brand .sub{font-size:12px;opacity:.8;}
+  .id-row{display:flex;gap:8px;margin:10px 0 12px 0;flex-wrap:wrap;}
+  .id-row input{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.35);color:#fff;
+    border-radius:8px;padding:8px 10px;font-size:14px;flex:1;min-width:120px;}
+  .id-row input::placeholder{color:rgba(255,255,255,.65);}
+
+  /* TAB STRIPS */
+  .tabstrip{display:flex;overflow-x:auto;gap:6px;padding:0 0 10px 0;scrollbar-width:none;}
+  .tabstrip::-webkit-scrollbar{display:none;}
+  .tab{flex:0 0 auto;padding:9px 14px;border-radius:999px;font-size:13px;font-weight:600;
+    background:rgba(255,255,255,.10);color:rgba(255,255,255,.85);border:1px solid rgba(255,255,255,.25);
+    cursor:pointer;white-space:nowrap;}
+  .tab.active{background:#fff;color:var(--garnet-dark);border-color:#fff;}
+
+  .stationstrip{display:flex;overflow-x:auto;gap:8px;padding:12px 16px;background:#fff;border-bottom:1px solid var(--line);
+    scrollbar-width:none;position:sticky;top:96px;z-index:15;}
+  .stationstrip::-webkit-scrollbar{display:none;}
+  .stbtn{flex:0 0 auto;padding:10px 14px;border-radius:10px;border:1.5px solid var(--line);background:#fff;
+    font-size:13px;font-weight:600;color:var(--ink);cursor:pointer;text-align:left;min-width:118px;}
+  .stbtn .n{display:block;font-size:10px;font-weight:700;letter-spacing:.4px;color:var(--grey);margin-bottom:2px;}
+  .stbtn.active{border-color:var(--garnet);background:#FBEFF2;color:var(--garnet-dark);}
+  .stbtn.active .n{color:var(--garnet);}
+
+  main{padding:16px;}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px;}
+  .card h2{font-size:15px;margin:0 0 2px 0;}
+  .card .focus{font-size:12.5px;color:var(--grey);margin:0 0 14px 0;line-height:1.4;}
+
+  .field{margin-bottom:16px;}
+  .field:last-child{margin-bottom:0;}
+  .field label{display:block;font-size:13px;font-weight:600;margin-bottom:7px;color:var(--ink);}
+  .field .setup{font-size:11.5px;color:var(--grey);margin:-4px 0 8px 0;line-height:1.35;}
+
+  .numctl{display:flex;align-items:center;gap:10px;}
+  .numctl button{width:44px;height:44px;border-radius:10px;border:1.5px solid var(--line);background:#fff;
+    font-size:20px;font-weight:700;color:var(--garnet);cursor:pointer;}
+  .numctl input{flex:1;text-align:center;font-size:20px;font-weight:700;padding:9px 4px;border-radius:10px;
+    border:1.5px solid var(--line);background:#FAF8F4;min-width:0;}
+  .unit{font-size:12px;color:var(--grey);min-width:34px;}
+  .numctl-sm{display:flex;align-items:center;gap:4px;}
+  .numctl-sm button{width:30px;height:30px;flex:0 0 auto;border-radius:8px;border:1.5px solid var(--line);background:#fff;
+    font-size:16px;font-weight:700;color:var(--garnet);cursor:pointer;line-height:1;padding:0;}
+  .numctl-sm button:active{background:#FBEFF2;}
+  .numctl-sm input{width:44px;text-align:center;font-size:15px;font-weight:800;padding:6px 2px;border-radius:8px;
+    border:1.5px solid var(--line);background:#FAF8F4;}
+
+  .btnrow{display:flex;gap:8px;flex-wrap:wrap;}
+  .pill{flex:1;min-width:64px;padding:12px 8px;border-radius:10px;border:1.5px solid var(--line);background:#fff;
+    font-size:14px;font-weight:700;cursor:pointer;color:var(--ink);text-align:center;}
+  .pill.yes-sel{background:var(--turf);border-color:var(--turf-dark);color:#fff;}
+  .pill.no-sel{background:var(--flag);border-color:#8B2833;color:#fff;}
+  .pill.scale-sel{background:var(--garnet);border-color:var(--garnet-dark);color:#fff;}
+
+  .routegrid{display:flex;flex-direction:column;gap:10px;}
+  .routerow{display:flex;align-items:center;gap:10px;}
+  .routerow .rname{font-size:13px;font-weight:600;width:78px;flex:0 0 auto;}
+  .routerow .btnrow{flex:1;}
+  .routerow .pill{min-width:0;padding:10px 4px;font-size:13px;}
+  .rretotal{margin-top:10px;font-size:12.5px;color:var(--grey);text-align:right;}
+  .rretotal b{color:var(--garnet-dark);font-size:14px;}
+
+  .logbtn{width:100%;padding:15px;border-radius:12px;border:none;background:var(--garnet);color:#fff;
+    font-size:15px;font-weight:700;cursor:pointer;box-shadow:0 3px 8px rgba(122,31,61,.3);}
+  .logbtn:active{background:var(--garnet-dark);}
+  .logbtn:disabled{background:var(--grey);box-shadow:none;}
+
+  .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--ink);color:#fff;
+    padding:12px 20px;border-radius:10px;font-size:14px;font-weight:600;z-index:60;box-shadow:0 4px 14px rgba(0,0,0,.25);
+    opacity:0;pointer-events:none;transition:opacity .2s;}
+  .toast.show{opacity:1;}
+  .confirmOverlay{display:none;position:fixed;inset:0;background:rgba(33,28,31,.55);z-index:100;
+    align-items:center;justify-content:center;padding:20px;}
+  .confirmBox{background:#fff;border-radius:14px;padding:22px;max-width:380px;width:100%;
+    box-shadow:0 10px 40px rgba(0,0,0,.3);}
+  .confirmBox p{font-size:14.5px;line-height:1.5;color:var(--ink);margin:0 0 18px 0;}
+  .confirmBtns{display:flex;gap:10px;}
+  .confirmBtns button{flex:1;padding:12px;border-radius:10px;font-size:14px;font-weight:700;cursor:pointer;border:1.5px solid var(--line);}
+  #confirmCancelBtn{background:#fff;color:var(--ink);}
+  #confirmOkBtn{background:var(--flag);border-color:#8B2833;color:#fff;}
+
+  /* SCRIMMAGE */
+  .eventgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  @media(min-width:600px){.eventgrid{grid-template-columns:1fr 1fr 1fr;}}
+  .evbtn{padding:12px 8px;border-radius:10px;border:1.5px solid var(--line);background:#fff;text-align:left;cursor:pointer;}
+  .evbtn .pts{font-weight:800;font-size:15px;}
+  .evbtn.pos .pts{color:var(--turf);}
+  .evbtn.neg .pts{color:var(--flag);}
+  .evbtn .label{display:block;font-size:11.5px;color:var(--ink);margin-top:2px;line-height:1.25;}
+  .evbtn:active{background:#F3EFE8;}
+  .runningtotal{display:flex;justify-content:space-between;align-items:center;background:#FAF8F4;border:1px solid var(--line);
+    border-radius:10px;padding:10px 14px;margin-bottom:14px;}
+  .runningtotal .label{font-size:12.5px;color:var(--grey);font-weight:600;}
+  .runningtotal .val{font-size:22px;font-weight:800;color:var(--garnet-dark);}
+
+  /* LOG */
+  .logcard summary, details.card summary{cursor:pointer;font-size:14px;font-weight:700;color:var(--garnet-dark);padding:2px 0;list-style:none;}
+  details.card summary::-webkit-details-marker{display:none;}
+  details.card summary::before{content:'▸ ';}
+  details.card[open] summary::before{content:'▾ ';}
+  table.logtable{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px;}
+  table.logtable th,table.logtable td{border-bottom:1px solid var(--line);padding:6px 4px;text-align:left;white-space:nowrap;}
+  table.logtable th{color:var(--grey);font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.3px;}
+  .logwrap{overflow-x:auto;}
+  .exportbar{display:flex;gap:8px;margin-top:12px;}
+  .exportbar button{flex:1;padding:11px;border-radius:10px;border:1.5px solid var(--garnet);background:#fff;
+    color:var(--garnet-dark);font-weight:700;font-size:13px;cursor:pointer;}
+  .empty{font-size:12.5px;color:var(--grey);padding:8px 0;}
+  .synctag{font-size:10.5px;color:var(--grey);margin-top:6px;}
+  .day6{font-size:13px;color:var(--grey);line-height:1.5;padding:6px 2px;}
+
+  .modeToggle{display:flex;gap:6px;margin-bottom:10px;}
+  .modebtn{flex:1;padding:9px;border-radius:9px;border:1px solid rgba(255,255,255,.35);
+    background:rgba(255,255,255,.10);color:rgba(255,255,255,.85);font-size:13px;font-weight:700;cursor:pointer;}
+  .modebtn.active{background:#fff;color:var(--garnet-dark);border-color:#fff;}
+
+  .filterbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}
+  .filterbar select,.filterbar input{flex:1;min-width:110px;padding:10px;border-radius:9px;border:1.5px solid var(--line);
+    background:#fff;font-size:13px;color:var(--ink);}
+  .ghost{padding:11px 16px;border-radius:10px;border:1.5px solid var(--garnet);background:#fff;color:var(--garnet-dark);
+    font-weight:700;font-size:13.5px;cursor:pointer;}
+
+  .statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;}
+  @media(min-width:600px){.statgrid{grid-template-columns:repeat(7,1fr);}}
+  .statbox{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 6px;text-align:center;}
+  .statbox .n{font-size:19px;font-weight:800;color:var(--garnet-dark);display:block;}
+  .statbox .l{font-size:10.5px;color:var(--grey);font-weight:700;}
+
+  .snapgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px;}
+  @media(min-width:600px){.snapgrid{grid-template-columns:repeat(4,1fr);}}
+  .snapbox{background:#FAF8F4;border:1px solid var(--line);border-radius:10px;padding:12px;}
+  .snapbox .l{font-size:10.5px;color:var(--grey);font-weight:700;text-transform:uppercase;letter-spacing:.3px;}
+  .snapbox .v{font-size:20px;font-weight:800;color:var(--garnet-dark);margin-top:2px;}
+  .combinelist{font-size:12px;color:var(--ink);line-height:1.6;margin-top:4px;}
+
+  /* SIGN-IN & PINNIES */
+  textarea.rostertext{width:100%;min-height:140px;border-radius:10px;border:1.5px solid var(--line);padding:10px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;resize:vertical;}
+  .toggle-link{background:none;border:none;color:var(--garnet-dark);font-size:12.5px;font-weight:700;
+    text-decoration:underline;cursor:pointer;padding:4px 0;}
+  table.roster{width:100%;border-collapse:collapse;font-size:13.5px;}
+  table.roster th{text-align:left;font-size:10.5px;color:var(--grey);text-transform:uppercase;letter-spacing:.3px;
+    padding:6px 6px;border-bottom:2px solid var(--line);}
+  table.roster td{padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  tr.present{background:#F2F8F4;}
+  .pinnycell{display:flex;align-items:center;gap:5px;}
+  .pinnybadge{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:30px;
+    border-radius:8px;background:var(--garnet);color:#fff;font-weight:800;font-size:14px;padding:0 6px;}
+  .pinnybadge.unassigned{background:#EDE8DE;color:var(--grey);}
+  input.pinnyedit{width:52px;padding:6px;border-radius:8px;border:1.5px solid var(--line);text-align:center;font-weight:700;}
+  input.pinnyedit.unassigned{background:#FAF8F4;color:var(--grey);font-weight:600;}
+  .assignbtn{padding:6px 8px;border-radius:8px;border:1.5px solid var(--garnet);background:#fff;color:var(--garnet-dark);
+    font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;}
+  .rostername{font-weight:700;}
+  .rosteryear{color:var(--grey);font-size:12px;}
+  .rosterpos{color:var(--grey);font-size:11.5px;line-height:1.3;max-width:220px;}
+  .presentbtn{padding:9px 14px;border-radius:9px;border:1.5px solid var(--line);background:#fff;
+    font-weight:700;font-size:12.5px;cursor:pointer;min-width:92px;}
+  .presentbtn.on{background:var(--turf);border-color:var(--turf-dark);color:#fff;}
+  .checktime{font-size:10.5px;color:var(--grey);display:block;margin-top:3px;}
+  .rmbtn{background:none;border:none;color:var(--grey);font-size:16px;cursor:pointer;padding:4px;}
+  .dangerzone{border-color:var(--flag);}
+
+  /* TEAM SELECTION */
+  .decisionbadge{display:inline-block;padding:4px 9px;border-radius:999px;font-size:11px;font-weight:800;
+    letter-spacing:.2px;}
+  .decisionbadge.team1{background:#DCEFE3;color:var(--turf-dark);}
+  .decisionbadge.team2{background:#E4EEF7;color:#1F4E6E;}
+  .decisionbadge.reserve{background:#F3EAD2;color:var(--gold);}
+  .decisionbadge.release{background:#F6DEE1;color:#8B2833;}
+  .decisionbadge.undecided{background:#EDE8DE;color:var(--grey);}
+  .decidebtns{display:flex;gap:5px;flex-wrap:wrap;}
+  .decidebtns button{padding:6px 8px;border-radius:8px;border:1.5px solid var(--line);background:#fff;
+    font-size:10.5px;font-weight:700;cursor:pointer;color:var(--ink);white-space:nowrap;}
+  .decidebtns button.team1.on{background:var(--turf);border-color:var(--turf-dark);color:#fff;}
+  .decidebtns button.team2.on{background:#2E6DA4;border-color:#1F4E6E;color:#fff;}
+  .decidebtns button.reserve.on{background:var(--gold);border-color:#8A6A1E;color:#fff;}
+  .decidebtns button.release.on{background:var(--flag);border-color:#8B2833;color:#fff;}
+  .comparegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;}
+  .comparecol{background:#FAF8F4;border:1px solid var(--line);border-radius:12px;padding:12px;}
+  .comparename{display:flex;justify-content:space-between;align-items:flex-start;font-weight:800;font-size:14px;
+    margin-bottom:8px;gap:6px;}
+  .comparestat{font-size:12px;color:var(--grey);margin-bottom:4px;}
+  .comparestat b{color:var(--ink);font-size:13.5px;}
+  .comparepos{font-size:11px;color:var(--grey);margin:6px 0 10px 0;line-height:1.35;}
+  .comparechips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+  .comparechip{display:flex;align-items:center;gap:6px;background:#FAF8F4;border:1px solid var(--line);
+    border-radius:999px;padding:6px 10px;font-size:12px;font-weight:700;}
+  .comparechip button{background:none;border:none;color:var(--grey);cursor:pointer;font-size:13px;padding:0;}
+  input.comparecheck{width:18px;height:18px;}
+  .walkonpos{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;}
+  .poscheck{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:var(--ink);cursor:pointer;}
+  .poscheck input{width:17px;height:17px;}
+  textarea.comparenote{width:100%;min-height:50px;margin-top:8px;padding:8px;border-radius:8px;
+    border:1.5px solid var(--line);font-size:12px;font-family:inherit;resize:vertical;background:#fff;}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="brand">
+      <h1>GEE-GEES TRYOUT — EVALUATOR CONSOLE</h1>
+      <span class="sub"><span id="dateTag"></span> &nbsp;<span id="syncStatus" style="font-weight:700">● Syncing…</span></span>
+    </div>
+    <div class="modeToggle">
+      <button id="modeEvaluator" class="modebtn active">Evaluator — Station Entry</button>
+      <button id="modeCoach" class="modebtn">Head Coach — Dashboard</button>
+      <button id="modeCheckin" class="modebtn">Sign-In &amp; Pinnies</button>
+      <button id="modeSelection" class="modebtn">Team Selection</button>
+    </div>
+    <div class="id-row" id="idRow">
+      <input id="evalName" placeholder="Your initials" maxlength="6">
+      <input id="podLabel" placeholder="Group (A–E)" maxlength="4">
+    </div>
+    <div class="tabstrip" id="sessionTabs"></div>
+  </header>
+
+  <div class="stationstrip" id="stationTabs"></div>
+
+  <main id="mainArea"></main>
+
+</div>
+<div class="toast" id="toast"></div>
+<div class="confirmOverlay" id="confirmOverlay">
+  <div class="confirmBox">
+    <p id="confirmMessage"></p>
+    <div class="confirmBtns">
+      <button id="confirmCancelBtn" class="ghost">Cancel</button>
+      <button id="confirmOkBtn" class="danger">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------------------------------------------------------------
+   DATA MODEL
+   Each session (1-5) has 5 rotation stations with tap-optimized
+   field sets condensed from the full packet's metrics. Sessions
+   6-7 are full scrimmage days (no station rotation).
+---------------------------------------------------------------- */
+const SESSIONS = {
+  1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
+    stations:[
+      {name:"40-Yard Dash", tag:"COMBINE", fields:[
+        {id:"t40",label:"40-yd time",type:"num",unit:"sec",step:0.01},
+        {id:"split10",label:"10-yd split",type:"num",unit:"sec",step:0.01}
+      ]},
+      {name:"WR/QB: Out·Hook·In·Go", tag:"ROUTE", setup:"2 QB pods of 4. Score each route 0–5 (timing+separation+finish).", fields:[
+        {id:"rre",type:"route",routes:["Out","Hook","In","Go"]}
+      ]},
+      {name:"Gauntlet Plus", tag:"CATCH", setup:"8 balls in 90 seconds, thrown from both sides.", fields:[
+        {id:"caught",label:"Caught",type:"num",unit:"/8",min:0,max:8,step:1},
+        {id:"fumbles",label:"Fumbles after catch",type:"num",unit:"ct",min:0,max:8,step:1},
+        {id:"penalty",label:"Time penalty (drop pickup)",type:"yn"}
+      ]},
+      {name:"DB: Backpedal→Hip Flip→Sprint→Catch", tag:"DB/BLITZ", setup:"Blitzer alt: sprint to 12yd, redirect on signal to cone.", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["DB","Blitzer"]},
+        {id:"time",label:"Time through zone / to cone",type:"num",unit:"sec",step:0.01},
+        {id:"hipflip",label:"Hip flip fluidity (DB)",type:"scale5"},
+        {id:"secured",label:"Catch/INT secured (DB) or correct cone (Blitzer)",type:"yn"}
+      ]},
+      {name:"Beat the Flag (10-yd Box)", tag:"PURSUIT", setup:"O vs DB, opposite sides of 10-yd box, 5 reps.", fields:[
+        {id:"cross",label:"Successful crossings",type:"num",unit:"/5",min:0,max:5,step:1},
+        {id:"flags",label:"Flags allowed (defender)",type:"num",unit:"/5",min:0,max:5,step:1},
+        {id:"time",label:"Time to cross",type:"num",unit:"sec",step:0.01}
+      ]}
+    ]},
+  2:{label:"D2", name:"Change of Direction", scrimmage:true,
+    stations:[
+      {name:"5-10-5 Shuttle + Catch-Plant", tag:"COMBINE", fields:[
+        {id:"shuttle",label:"Shuttle time",type:"num",unit:"sec",step:0.01},
+        {id:"catchmid",label:"Catch at middle cone",type:"yn"},
+        {id:"plant",label:"Plant clean",type:"yn"}
+      ]},
+      {name:"WR/QB: In·Post·Corner (x2)", tag:"ROUTE", setup:"6 routes — 2 reps each of In, Post, Corner.", fields:[
+        {id:"rre",type:"route",routes:["In #1","In #2","Post #1","Post #2","Corner #1","Corner #2"]}
+      ]},
+      {name:"High-Point Contest", tag:"CATCH", setup:"5 reps vs coach with paddle simulating contact.", fields:[
+        {id:"catches",label:"Catches",type:"num",unit:"/5",min:0,max:5,step:1},
+        {id:"contested",label:"Contested wins (secured through contact)",type:"num",unit:"/5",min:0,max:5,step:1}
+      ]},
+      {name:"DB Mirror / Blitzer Pressure (Live)", tag:"DB/BLITZ", setup:"Live rep: Centre releases, DB mirrors, Blitzer rushes from 7yd.", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["DB","Blitzer"]},
+        {id:"mirror",label:"Mirror technique grade (DB)",type:"scale5"},
+        {id:"inphase",label:"Stayed in-phase (DB)",type:"yn"},
+        {id:"pbuint",label:"PBU / INT (DB)",type:"num",unit:"ct",min:0,max:5,step:1},
+        {id:"sack",label:"Sack (Blitzer)",type:"yn"},
+        {id:"pressure",label:"Pressure (Blitzer)",type:"yn"},
+        {id:"penalty",label:"Penalty (Blitzer)",type:"yn"}
+      ]},
+      {name:"Box Pull", tag:"PURSUIT", setup:"20x10yd box, two 5-yd gates. Defender takes direct angle.", fields:[
+        {id:"flags",label:"Flags",type:"num",unit:"/5",min:0,max:5,step:1},
+        {id:"angle",label:"Correct angle",type:"yn"},
+        {id:"gate",label:"Gate reached (carrier)",type:"yn"},
+        {id:"overpursuit",label:"Over-pursuit",type:"num",unit:"ct",min:0,max:5,step:1}
+      ]}
+    ]},
+  3:{label:"D3", name:"Agility & Body Control", scrimmage:true,
+    stations:[
+      {name:"Reactive Break + Catch", tag:"COMBINE", setup:"Coach at cone 2 gives live L/R call at the break.", fields:[
+        {id:"time",label:"Time to cone 2",type:"num",unit:"sec",step:0.01},
+        {id:"breakdir",label:"Correct break direction",type:"yn"},
+        {id:"catch",label:"Catch at break point",type:"yn"}
+      ]},
+      {name:"2v2 Mirror Coverage + Blitz Rec.", tag:"ROUTE", setup:"2 WR vs 2 DB + blitzer from 7yd. QB must read & throw hot.", fields:[
+        {id:"rre",type:"route",routes:["Rep 1","Rep 2","Rep 3","Rep 4"]},
+        {id:"winloss",label:"Rep result",type:"choice",options:["Win","Loss"]},
+        {id:"hotread",label:"QB recognized blitz / threw hot",type:"yn"}
+      ]},
+      {name:"Over-the-Shoulder Tracking", tag:"CATCH", setup:"5 deep balls thrown 30-40yd; mark in-stride only if no gather step.", fields:[
+        {id:"catches",label:"Catches",type:"num",unit:"/5",min:0,max:5,step:1},
+        {id:"instride",label:"In-stride catches",type:"num",unit:"/5",min:0,max:5,step:1}
+      ]},
+      {name:"DB 1-on-1 Press / Blitz Recognition", tag:"DB/BLITZ", setup:"5 releases vs press. Blitzers react to run/pass read.", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["DB","Blitzer"]},
+        {id:"coveragewin",label:"Coverage win (DB — no catch or PBU)",type:"yn"},
+        {id:"correctread",label:"Correct read (Blitzer)",type:"yn"},
+        {id:"falsestart",label:"False start (Blitzer)",type:"yn"}
+      ]},
+      {name:"Sweep Pursuit", tag:"PURSUIT", setup:"Carrier runs parallel to sideline; defender must force back inside.", fields:[
+        {id:"flags",label:"Flags",type:"num",unit:"/5",min:0,max:5,step:1},
+        {id:"forcedinside",label:"Forced inside",type:"yn"}
+      ]}
+    ]},
+  4:{label:"D4", name:"Explosiveness", scrimmage:true,
+    stations:[
+      {name:"Vertical Jump", tag:"COMBINE", setup:"Best of 3. Technique judge watches for step-over (invalidates rep).", fields:[
+        {id:"reach",label:"Standing reach",type:"num",unit:"in",step:0.5},
+        {id:"touch",label:"Jump touch",type:"num",unit:"in",step:0.5},
+        {id:"stepover",label:"Step-over foul on best attempt",type:"yn"}
+      ]},
+      {name:"Double Moves + Moving Target", tag:"ROUTE", setup:"Out-and-up, sluggo, hitch-and-go vs coach DB. 6 reps.", fields:[
+        {id:"rre",type:"route",routes:["Rep 1","Rep 2","Rep 3","Rep 4","Rep 5","Rep 6"]},
+        {id:"separation",label:"Separation created on double move",type:"yn"}
+      ]},
+      {name:"Tennis Ball Reaction", tag:"CATCH", setup:"10 reps. Coach points L/R; athlete reacts to tossed ball.", fields:[
+        {id:"reactions",label:"Reactions won",type:"num",unit:"/10",min:0,max:10,step:1},
+        {id:"falsesteps",label:"False steps",type:"num",unit:"ct",min:0,max:10,step:1}
+      ]},
+      {name:"DB Trail / Blitzer Live Blitz", tag:"DB/BLITZ", setup:"DB trails hip through double move; Blitzer rushes coach QB.", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["DB","Blitzer"]},
+        {id:"inphase",label:"Stayed in-phase / not stacked (DB)",type:"yn"},
+        {id:"sack",label:"Sack (Blitzer)",type:"yn"},
+        {id:"pressure",label:"Pressure (Blitzer)",type:"yn"},
+        {id:"penalty",label:"Penalty (Blitzer)",type:"yn"}
+      ]},
+      {name:"Delayed Pursuit", tag:"PURSUIT", setup:"Defender starts 2 sec behind carrier on \u201cgo\u201d command.", fields:[
+        {id:"flags",label:"Flags",type:"num",unit:"/5",min:0,max:5,step:1},
+        {id:"timetopull",label:"Time to pull",type:"num",unit:"sec",step:0.01}
+      ]}
+    ]},
+  5:{label:"D5", name:"Power & Horizontal Burst", scrimmage:true,
+    stations:[
+      {name:"Broad Jump + Target Box", tag:"COMBINE", setup:"Must stick landing inside 3x3ft taped box. Best of 3.", fields:[
+        {id:"distance",label:"Distance",type:"num",unit:"in",step:0.5},
+        {id:"stick",label:"Stick landing grade",type:"scale5"}
+      ]},
+      {name:"Speed Cuts + Progression Reads", tag:"ROUTE", setup:"QB reads L-R or R-L, hits checkdown if first two covered.", fields:[
+        {id:"rre",type:"route",routes:["Rep 1","Rep 2","Rep 3","Rep 4","Rep 5","Rep 6"]},
+        {id:"progtime",label:"QB progression time (WR1→WR2→checkdown)",type:"num",unit:"sec",step:0.01}
+      ]},
+      {name:"Sideline Toe-Tap", tag:"CATCH", setup:"5 reps, thrown 15-20yd. Two line judges confirm feet in bounds.", fields:[
+        {id:"catches",label:"Catches",type:"num",unit:"/5",min:0,max:5,step:1},
+        {id:"inbounds",label:"Feet in bounds (both judges agree)",type:"num",unit:"/5",min:0,max:5,step:1}
+      ]},
+      {name:"DB Red-Zone / Blitzer Delayed Blitz", tag:"DB/BLITZ", setup:"Compressed 10-yd end zone. Blitzers must wait for \u201cgo.\u201d", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["DB","Blitzer"]},
+        {id:"nocatch",label:"No catch allowed (DB)",type:"yn"},
+        {id:"pbu",label:"PBU (DB)",type:"num",unit:"ct",min:0,max:5,step:1},
+        {id:"ontime",label:"On-time arrival, within 2s (Blitzer)",type:"yn"},
+        {id:"earlygo",label:"Early go / offsides (Blitzer)",type:"yn"}
+      ]},
+      {name:"Shadow Pull", tag:"PURSUIT", setup:"1-on-1 mirror in 20x10yd box; carrier has 5 sec to reach end zone.", fields:[
+        {id:"stops",label:"Stops (flag pull or push out)",type:"num",unit:"/5",min:0,max:5,step:1}
+      ]}
+    ]},
+  6:{label:"D6", name:"Live Validation — Full Scrimmage", scrimmage:true, stations:[],
+     note:"Station rotation ends here. 30-min warm-up, then full live scrimmage. Use the Scrimmage tab for the entire session."},
+  7:{label:"D7", name:"Live Validation — Full Scrimmage + Packages", scrimmage:true, stations:[],
+     note:"30-min warm-up, then full live scrimmage with Red-Zone / 2-Minute / Short-Yardage packages. Use the Scrimmage tab for the entire session."}
+};
+// Station codes (S1–S5) within each day, assigned by rotation order —
+// consistent across days (e.g. S3 is always the catching station),
+// so a combined reference like D1S3 unambiguously means Day 1, Station 3.
+Object.values(SESSIONS).forEach(day=>{
+  day.stations.forEach((st, i)=>{ st.code = 'S'+(i+1); });
+});
+
+const SCRIMMAGE_EVENTS = {
+  offense:[
+    {label:"Clean catch in traffic", pts:2, when:"Contested or between defenders, secured"},
+    {label:"Drop (catchable ball)", pts:-2, when:"Ball hits hands, no defender contact"},
+    {label:"Correct route depth", pts:1, when:"Breaks at play-call depth, no adjustment needed"},
+    {label:"Wrong route / coverage read", pts:-2, when:"WR error draws throw into coverage"},
+    {label:"QB completion", pts:1, when:"Any completion"},
+    {label:"QB interception", pts:-3, when:"Thrown to defense"},
+    {label:"QB sack taken (>4s)", pts:-1, when:"Fails to get rid of ball within 7-sec limit"},
+    {label:"Center bad snap", pts:-2, when:"Grounded or off-target exchange"},
+    {label:"Center good snap + release", pts:1, when:"Clean exchange + immediate route release"},
+    {label:"Extra effort after play", pts:2, when:"Chasing turnover, pursuing to whistle"},
+    {label:"Negative body language", pts:-2, when:"Head down, throwing hands, pouting"}
+  ],
+  defense:[
+    {label:"PBU (Pass Breakup)", pts:2, when:"Deflected pass"},
+    {label:"Interception", pts:4, when:"Possession change"},
+    {label:"Flag pull in open field", pts:2, when:"Solo tackle in space, good technique"},
+    {label:"Missed flag pull (dive & miss)", pts:-2, when:"Over-pursuit or poor technique"},
+    {label:"Blitzer sack", pts:3, when:"QB down behind line"},
+    {label:"Blitzer penalty", pts:-4, when:"Roughing, offsides, illegal contact"},
+    {label:"Coverage \u201cin phase\u201d", pts:1, when:"No separation, WR on hip, per rep"},
+    {label:"Blown coverage", pts:-3, when:"Assignment error, receiver wide open"},
+    {label:"Extra effort after play", pts:2, when:"Chasing turnover, pursuit to whistle"},
+    {label:"Negative body language", pts:-2, when:"Head down, throwing hands, pouting"}
+  ]
+};
+const TCS_ANCHORS = [
+  {v:5,label:"Coaches teammates, owns mistakes, seeks feedback"},
+  {v:4,label:"Communicates well, accepts coaching, encourages"},
+  {v:3,label:"Communicates when prompted, quiet but not disruptive"},
+  {v:2,label:"Visible frustration, minimal communication"},
+  {v:1,label:"Argues with staff, blames others, disruptive"}
+];
+const FIQ_EVENTS = [
+  {label:"Correct pre-snap read/communication", pts:1},
+  {label:"Executed hot route vs. blitz", pts:1},
+  {label:"Post-play adjustment (verbal/demonstrated)", pts:1},
+  {label:"Procedural penalty (false start, delay, illegal motion)", pts:-1},
+  {label:"Same mistake repeated next drive", pts:-1},
+  {label:"Complete mental breakdown (wrong assignment)", pts:-2}
+];
+
+/* ---------------------------------------------------------------
+   ROSTER (for simulation / dry-run testing only)
+---------------------------------------------------------------- */
+const POSITION_OPTIONS = ['Quarterback','Receiver','Center','Defender','Rusher'];
+const ROSTER = [
+  {num:1,name:"Abigail Snider",year:"1st",pos:"Receiver, Defender"},
+  {num:2,name:"Alexandra Gagnon",year:"1st",pos:"Center"},
+  {num:3,name:"Antonia Angelopoulou",year:"4th",pos:"Receiver, Defender"},
+  {num:4,name:"Ava Bowns",year:"Masters",pos:"Defender"},
+  {num:5,name:"Caitlin Sonnemann",year:"1st",pos:"Quarterback, Receiver, Defender, Center, Rusher"},
+  {num:6,name:"Celestina Onabajo",year:"2nd",pos:"Defender, Rusher"},
+  {num:7,name:"Chantal Senior",year:"4th",pos:"Receiver"},
+  {num:8,name:"Denise Caroline Wannyana",year:"1st",pos:"Defender, Rusher"},
+  {num:9,name:"Elizabeth Salnikov",year:"1st",pos:"Receiver, Defender, Rusher"},
+  {num:10,name:"Erika Murphy",year:"4th",pos:"Defender"},
+  {num:11,name:"Fatena Aldaqqaq",year:"2nd",pos:"Defender, Rusher"},
+  {num:12,name:"Hannah Court",year:"1st",pos:"Receiver, Rusher"},
+  {num:13,name:"Hope James",year:"2nd",pos:"Rusher"},
+  {num:14,name:"Julia Beumer",year:"1st",pos:"Receiver, Defender, Center"},
+  {num:15,name:"Justine Fontaine",year:"2nd",pos:"Receiver, Defender, Rusher"},
+  {num:16,name:"Katie Foley",year:"1st",pos:"Receiver, Defender, Rusher"},
+  {num:17,name:"Kennedy Boucher",year:"3rd",pos:"Receiver"},
+  {num:18,name:"Kyria Renee Ossa",year:"4th",pos:"Defender"},
+  {num:19,name:"Laiya Evraire",year:"Non-degree",pos:"Quarterback"},
+  {num:20,name:"Lorraine Pereira",year:"Masters",pos:"Defender, Rusher"},
+  {num:21,name:"Madison Lamarche",year:"4th",pos:"Defender, Rusher"},
+  {num:22,name:"Maeve Caddel",year:"1st",pos:"Defender, Rusher"},
+  {num:23,name:"Maya Seed-Desai",year:"4th",pos:"Receiver, Center"},
+  {num:24,name:"Rebecca Wilton",year:"2nd",pos:"Quarterback, Receiver, Center, Rusher"},
+  {num:25,name:"Sarah Lefler",year:"2nd",pos:"Receiver"},
+  {num:26,name:"Sienna Dumel Wiggins",year:"1st",pos:"Receiver, Defender"},
+  {num:27,name:"Victoria Adeyemi",year:"2nd",pos:"Receiver, Defender, Rusher"}
+];
+
+/* ---------------------------------------------------------------
+   STATE
+---------------------------------------------------------------- */
+let state = { session:1, station:0, mode:"station", viewMode:"evaluator", values:{}, runningPts:0 };
+let entries = [];
+// Tracked across every save to any storage key, so the app can warn before
+// the tab closes if there's something that hasn't safely landed yet —
+// either a save still in flight, or the last known sync attempt failed.
+let pendingSaves = 0;
+let lastSyncOk = true;
+// ---------------------------------------------------------------
+// BACKEND — a Google Apps Script Web App backed by a Google Sheet,
+// standing in for Claude's artifact storage so this works no matter
+// how the HTML file is opened/shared, and so all 7 tablets genuinely
+// hit the same backend over the real internet. See
+// geegees_backend_AppsScript.gs for the one-time setup.
+// ---------------------------------------------------------------
+const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbxTSGI49WOZdG2CURFPjZGsv7zWecjEhu7_q9iI8gFuwm8P70psn2MHlFE-epttjPUB/exec';
+async function cloudGet(key){
+  try{
+    const res = await fetch(`${BACKEND_URL}?key=${encodeURIComponent(key)}`);
+    if(!res.ok) return null;
+    const data = await res.json();
+    return (data && data.value !== undefined && data.value !== null) ? { value: data.value } : null;
+  }catch(e){ return null; }
+}
+async function cloudSet(key, value){
+  try{
+    // text/plain avoids the browser's CORS preflight (OPTIONS) request,
+    // which Apps Script Web Apps don't handle — this is the standard
+    // workaround, not a mistake.
+    const res = await fetch(BACKEND_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ key, value })
+    });
+    if(!res.ok) return null;
+    const data = await res.json();
+    return (data && data.ok) ? { key, value } : null;
+  }catch(e){ return null; }
+}
+async function storageSet(key, value, shared){
+  pendingSaves++;
+  try{ return await cloudSet(key, value); }
+  finally{ pendingSaves--; }
+}
+const STORAGE_KEY = "geegees-tryout-entries";
+
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  clearTimeout(window._toastTimer);
+  window._toastTimer=setTimeout(()=>t.classList.remove('show'),1600);
+}
+/* Native confirm()/alert() are commonly blocked inside sandboxed iframes
+   (which is how this app runs in an artifact preview), where they either
+   throw or silently return false with no dialog ever shown — making any
+   "if(!await customConfirm(...)) return;" guard exit immediately, every time, with
+   nothing visibly happening. This in-page modal replaces that dependency. */
+function customConfirm(message){
+  return new Promise(resolve=>{
+    const overlay = document.getElementById('confirmOverlay');
+    document.getElementById('confirmMessage').textContent = message;
+    overlay.style.display = 'flex';
+    const okBtn = document.getElementById('confirmOkBtn');
+    const cancelBtn = document.getElementById('confirmCancelBtn');
+    const cleanup = (result)=>{
+      overlay.style.display = 'none';
+      okBtn.onclick = null; cancelBtn.onclick = null;
+      resolve(result);
+    };
+    okBtn.onclick = ()=> cleanup(true);
+    cancelBtn.onclick = ()=> cleanup(false);
+  });
+}
+
+/* ---------------------------------------------------------------
+   PERSISTENCE (shared across evaluator tablets)
+---------------------------------------------------------------- */
+async function loadEntries(){
+  try{
+    const res = await cloudGet(STORAGE_KEY);
+    entries = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ entries = []; }
+  renderLog();
+}
+async function saveEntries(){
+  try{
+    const res = await storageSet(STORAGE_KEY, JSON.stringify(entries), true);
+    if(!res){ toast("Saved locally — sync failed"); return false; }
+    return true;
+  }catch(e){ toast("Saved locally — sync failed"); return false; }
+}
+async function loadEvaluatorName(){
+  try{
+    const res = await cloudGet('geegees-evaluator-name');
+    if(res && res.value) document.getElementById('evalName').value = res.value;
+  }catch(e){}
+}
+document.addEventListener('DOMContentLoaded', ()=>{
+  document.getElementById('evalName').addEventListener('change', async (e)=>{
+    try{ await storageSet('geegees-evaluator-name', e.target.value, false); }catch(err){}
+  });
+});
+
+/* ---------------------------------------------------------------
+   RENDER: TOP TABS
+---------------------------------------------------------------- */
+function renderSessionTabs(){
+  const el = document.getElementById('sessionTabs');
+  el.innerHTML='';
+  Object.keys(SESSIONS).forEach(k=>{
+    const s = SESSIONS[k];
+    const b = document.createElement('button');
+    b.className = 'tab' + (Number(k)===state.session ? ' active':'');
+    b.textContent = s.label;
+    b.onclick = ()=>{ state.session=Number(k); state.station=0; state.mode = s.stations.length? 'station':'scrimmage'; state.values={}; renderAll(); };
+    el.appendChild(b);
+  });
+}
+function renderStationTabs(){
+  const el = document.getElementById('stationTabs');
+  el.innerHTML='';
+  const sess = SESSIONS[state.session];
+  sess.stations.forEach((st,i)=>{
+    const b = document.createElement('div');
+    b.className = 'stbtn' + (state.mode==='station' && state.station===i ? ' active':'');
+    b.innerHTML = `<span class="n">${sess.label}${st.code} · ${st.tag}</span>${st.name}`;
+    b.onclick = ()=>{ state.mode='station'; state.station=i; state.values={}; renderAll(); };
+    el.appendChild(b);
+  });
+  if(sess.scrimmage){
+    const b = document.createElement('div');
+    b.className = 'stbtn' + (state.mode==='scrimmage' ? ' active':'');
+    b.innerHTML = `<span class="n">${sess.label} · LIVE</span>Scrimmage +/-`;
+    b.onclick = ()=>{ state.mode='scrimmage'; state.values={}; renderAll(); };
+    el.appendChild(b);
+  }
+}
+
+/* ---------------------------------------------------------------
+   RENDER: STATION FORM
+---------------------------------------------------------------- */
+function fieldControl(f){
+  const val = state.values[f.id];
+  if(f.type==='num'){
+    return `<div class="numctl">
+      <button data-act="dec" data-id="${f.id}" data-step="${f.step||1}">−</button>
+      <input type="number" inputmode="decimal" data-id="${f.id}" value="${val!==undefined?val:''}" placeholder="0">
+      <span class="unit">${f.unit||''}</span>
+      <button data-act="inc" data-id="${f.id}" data-step="${f.step||1}">+</button>
+    </div>`;
+  }
+  if(f.type==='yn'){
+    return `<div class="btnrow">
+      <button class="pill ${val===true?'yes-sel':''}" data-act="yn" data-id="${f.id}" data-val="true">YES</button>
+      <button class="pill ${val===false?'no-sel':''}" data-act="yn" data-id="${f.id}" data-val="false">NO</button>
+    </div>`;
+  }
+  if(f.type==='scale5'){
+    return `<div class="btnrow">` + [1,2,3,4,5].map(n=>
+      `<button class="pill ${val===n?'scale-sel':''}" data-act="scale" data-id="${f.id}" data-val="${n}">${n}</button>`
+    ).join('') + `</div>`;
+  }
+  if(f.type==='choice'){
+    return `<div class="btnrow">` + f.options.map(o=>
+      `<button class="pill ${val===o?'scale-sel':''}" data-act="choice" data-id="${f.id}" data-val="${o}">${o}</button>`
+    ).join('') + `</div>`;
+  }
+  return '';
+}
+function renderStationForm(){
+  const sess = SESSIONS[state.session];
+  const main = document.getElementById('mainArea');
+  if(!sess.stations.length){
+    main.innerHTML = `<div class="card"><h2>${sess.name}</h2><p class="focus" style="margin-top:8px">${sess.note}</p></div>`;
+    return;
+  }
+  const st = sess.stations[state.station];
+  let html = `<div class="card"><h2>${sess.label}${st.code} — ${st.name}</h2>`;
+  if(st.setup) html += `<p class="focus">${st.setup}</p>`;
+  html += `<div class="field"><label>Athlete # (pinnie)</label>
+    <div class="numctl">
+      <button data-act="dec" data-id="_athlete" data-step="1">−</button>
+      <input type="number" inputmode="numeric" data-id="_athlete" value="${state.values._athlete!==undefined?state.values._athlete:''}" placeholder="#">
+      <span class="unit"></span>
+      <button data-act="inc" data-id="_athlete" data-step="1">+</button>
+    </div></div>`;
+  st.fields.forEach(f=>{
+    if(f.type==='route'){
+      const scores = f.routes.map(r=>state.values[f.id+'_'+r] ?? null);
+      const sum = scores.reduce((a,b)=>a+(b||0),0);
+      const max = f.routes.length*5;
+      const pct = max? Math.round(sum/max*100):0;
+      html += `<div class="field"><label>Route scores (tap 0–5 per rep)</label><div class="routegrid">`;
+      f.routes.forEach(r=>{
+        const v = state.values[f.id+'_'+r];
+        html += `<div class="routerow"><span class="rname">${r}</span><div class="btnrow">` +
+          [0,1,2,3,4,5].map(n=>`<button class="pill ${v===n?'scale-sel':''}" data-act="route" data-id="${f.id}_${r}" data-val="${n}">${n}</button>`).join('') +
+          `</div></div>`;
+      });
+      html += `</div><div class="rretotal">Total <b>${sum}/${max}</b> &nbsp;·&nbsp; RRE <b>${pct}%</b></div></div>`;
+    } else {
+      html += `<div class="field"><label>${f.label}</label>${fieldControl(f)}</div>`;
+    }
+  });
+  html += `</div>
+    <button class="logbtn" id="logBtn">Log Rep — Athlete #${state.values._athlete || '—'}</button>`;
+  main.innerHTML = html;
+  attachFieldListeners();
+  document.getElementById('logBtn').onclick = logStationEntry;
+}
+function attachFieldListeners(){
+  document.querySelectorAll('[data-act="inc"],[data-act="dec"]').forEach(b=>{
+    b.onclick = ()=>{
+      const id=b.dataset.id, step=parseFloat(b.dataset.step)||1;
+      let cur = parseFloat(state.values[id]) || 0;
+      cur = b.dataset.act==='inc' ? cur+step : cur-step;
+      cur = Math.round(cur*100)/100;
+      state.values[id]=cur;
+      renderCurrentForm();
+    };
+  });
+  document.querySelectorAll('input[type="number"][data-id]').forEach(inp=>{
+    inp.oninput = ()=>{ state.values[inp.dataset.id] = inp.value===''? undefined : parseFloat(inp.value); };
+  });
+  document.querySelectorAll('[data-act="yn"]').forEach(b=>{
+    b.onclick = ()=>{ state.values[b.dataset.id] = b.dataset.val==='true'; renderCurrentForm(); };
+  });
+  document.querySelectorAll('[data-act="scale"],[data-act="route"]').forEach(b=>{
+    b.onclick = ()=>{ state.values[b.dataset.id] = parseInt(b.dataset.val); renderCurrentForm(); };
+  });
+  document.querySelectorAll('[data-act="choice"]').forEach(b=>{
+    b.onclick = ()=>{ state.values[b.dataset.id] = b.dataset.val; renderCurrentForm(); };
+  });
+}
+function renderCurrentForm(){
+  const active = document.activeElement;
+  const preserveId = active && active.dataset ? active.dataset.id : null;
+  if(state.mode==='station') renderStationForm(); else renderScrimmage();
+}
+
+/* ---------------------------------------------------------------
+   ATHLETE # BAR (shared row injected above form fields)
+---------------------------------------------------------------- */
+function athleteBar(){
+  return `<div class="field"><label>Athlete # (pinnie)</label>
+    <div class="numctl">
+      <button data-act="dec" data-id="_athlete" data-step="1">−</button>
+      <input type="number" inputmode="numeric" data-id="_athlete" value="${state.values._athlete||''}" placeholder="#">
+      <span class="unit">unit</span>
+      <button data-act="inc" data-id="_athlete" data-step="1">+</button>
+    </div></div>`;
+}
+
+/* ---------------------------------------------------------------
+   RENDER: SCRIMMAGE / TCS / FIQ MODE
+---------------------------------------------------------------- */
+function renderScrimmage(){
+  const main = document.getElementById('mainArea');
+  const pts = state.runningPts || 0;
+  let html = `<div class="card">
+    <h2>Live Scrimmage — Athlete #${state.values._athlete||'—'}</h2>
+    <p class="focus">Tap the athlete number below, then log each event as it happens. Score resets when you log a new athlete number.</p>
+    <div class="field"><label>Athlete # (pinnie)</label>
+      <div class="numctl">
+        <button data-act="dec" data-id="_athlete" data-step="1">−</button>
+        <input type="number" inputmode="numeric" data-id="_athlete" value="${state.values._athlete||''}" placeholder="#">
+        <span class="unit"></span>
+        <button data-act="inc" data-id="_athlete" data-step="1">+</button>
+      </div>
+    </div>
+  </div>
+  <div class="runningtotal"><span class="label">RUNNING +/-</span><span class="val">${pts>0?'+':''}${pts}</span></div>
+
+  <div class="card"><h2>Offense</h2><div class="eventgrid">`;
+  SCRIMMAGE_EVENTS.offense.forEach((ev,i)=>{
+    html += `<button class="evbtn ${ev.pts>0?'pos':'neg'}" data-scrim="offense" data-idx="${i}">
+      <span class="pts">${ev.pts>0?'+':''}${ev.pts}</span><span class="label">${ev.label}</span></button>`;
+  });
+  html += `</div></div>
+
+  <div class="card"><h2>Defense</h2><div class="eventgrid">`;
+  SCRIMMAGE_EVENTS.defense.forEach((ev,i)=>{
+    html += `<button class="evbtn ${ev.pts>0?'pos':'neg'}" data-scrim="defense" data-idx="${i}">
+      <span class="pts">${ev.pts>0?'+':''}${ev.pts}</span><span class="label">${ev.label}</span></button>`;
+  });
+  html += `</div></div>
+
+  <div class="card"><h2>Football IQ (per drive)</h2><div class="eventgrid">`;
+  FIQ_EVENTS.forEach((ev,i)=>{
+    html += `<button class="evbtn ${ev.pts>0?'pos':'neg'}" data-fiq="${i}">
+      <span class="pts">${ev.pts>0?'+':''}${ev.pts}</span><span class="label">${ev.label}</span></button>`;
+  });
+  html += `</div></div>
+
+  <div class="card"><h2>Teammate & Coachability Score (TCS)</h2>
+  <p class="focus">Rate once per athlete per session.</p><div class="btnrow">`;
+  TCS_ANCHORS.forEach(a=>{
+    html += `<button class="pill ${state.values._tcs===a.v?'scale-sel':''}" data-tcs="${a.v}">${a.v}</button>`;
+  });
+  html += `</div>`;
+  const sel = TCS_ANCHORS.find(a=>a.v===state.values._tcs);
+  if(sel) html += `<p class="focus" style="margin-top:8px">${sel.label}</p>`;
+  html += `</div>
+
+  <button class="logbtn" id="logScrimBtn">Save TCS Score</button>`;
+
+  main.innerHTML = html;
+
+  document.querySelectorAll('[data-act="inc"],[data-act="dec"]').forEach(b=>{
+    b.onclick = ()=>{
+      const id=b.dataset.id, step=parseFloat(b.dataset.step)||1;
+      let cur = parseFloat(state.values[id]) || 0;
+      cur = b.dataset.act==='inc' ? cur+step : cur-step;
+      state.values[id]=cur; state.runningPts=0; renderScrimmage();
+    };
+  });
+  document.querySelectorAll('input[type="number"][data-id]').forEach(inp=>{
+    inp.oninput = ()=>{ state.values[inp.dataset.id] = inp.value===''? undefined : parseFloat(inp.value); };
+  });
+  document.querySelectorAll('[data-scrim]').forEach(b=>{
+    b.onclick = ()=>{
+      const cat=b.dataset.scrim, idx=parseInt(b.dataset.idx);
+      const ev = SCRIMMAGE_EVENTS[cat][idx];
+      logScrimmageEvent(cat, ev);
+    };
+  });
+  document.querySelectorAll('[data-fiq]').forEach(b=>{
+    b.onclick = ()=>{
+      const ev = FIQ_EVENTS[parseInt(b.dataset.fiq)];
+      logScrimmageEvent('fiq', ev);
+    };
+  });
+  document.querySelectorAll('[data-tcs]').forEach(b=>{
+    b.onclick = ()=>{ state.values._tcs = parseInt(b.dataset.tcs); renderScrimmage(); };
+  });
+  const logBtn = document.getElementById('logScrimBtn');
+  if(logBtn) logBtn.onclick = logTcsEntry;
+}
+
+/* ---------------------------------------------------------------
+   LOGGING
+---------------------------------------------------------------- */
+function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+function baseMeta(){
+  return {
+    id: uid(),
+    ts: new Date().toISOString(),
+    evaluator: document.getElementById('evalName').value || '—',
+    group: document.getElementById('podLabel').value || '—',
+    session: SESSIONS[state.session].label,
+    athlete: state.values._athlete ?? '—'
+  };
+}
+function logStationEntry(){
+  if(state.values._athlete===undefined || state.values._athlete===null || state.values._athlete===''){
+    toast("Enter an athlete # first"); return;
+  }
+  const st = SESSIONS[state.session].stations[state.station];
+  const data = {}; const fields = [];
+  st.fields.forEach(f=>{
+    if(f.type==='route'){
+      f.routes.forEach(r=>{
+        const v = state.values[f.id+'_'+r];
+        data[r] = v ?? '';
+        if(v!==undefined && v!==null) fields.push({label:r, type:'route', value:v});
+      });
+    } else {
+      const v = state.values[f.id];
+      data[f.label] = v ?? '';
+      if(v!==undefined && v!==null && (f.type==='scale5' || f.type==='num')) fields.push({label:f.label, type:f.type, value:v});
+    }
+  });
+  entries.push({ ...baseMeta(), type:'Station', tag:st.tag, stationCode:st.code, station:st.name, data, fields });
+  saveEntries(); renderLog();
+  toast(`Logged — ${st.name}, Athlete #${state.values._athlete}`);
+  const keepAthlete = state.values._athlete;
+  const keepPod = state.values._pod;
+  state.values = { _athlete: keepAthlete };
+  renderStationForm();
+}
+function logScrimmageEvent(cat, ev){
+  if(state.values._athlete===undefined || state.values._athlete===null || state.values._athlete===''){
+    toast("Enter an athlete # first"); return;
+  }
+  state.runningPts = (state.runningPts||0) + ev.pts;
+  entries.push({ ...baseMeta(), type: cat==='fiq'?'FIQ':'Scrimmage +/-', tag: cat==='fiq'?'FIQ':(cat==='offense'?'SCRIM-OFF':'SCRIM-DEF'), station: cat, data:{ event: ev.label, points: ev.pts } });
+  saveEntries(); renderLog();
+  toast(`${ev.pts>0?'+':''}${ev.pts} — ${ev.label}`);
+  renderScrimmage();
+}
+function logTcsEntry(){
+  if(state.values._athlete===undefined || state.values._athlete===null || state.values._athlete===''){
+    toast("Enter an athlete # first"); return;
+  }
+  if(state.values._tcs===undefined){ toast("Pick a TCS score first"); return; }
+  entries.push({ ...baseMeta(), type:'TCS', tag:'TCS', station:'TCS', data:{ score: state.values._tcs } });
+  saveEntries(); renderLog();
+  toast(`TCS ${state.values._tcs} saved — Athlete #${state.values._athlete}`);
+}
+
+/* ---------------------------------------------------------------
+   LOG VIEW + EXPORT
+---------------------------------------------------------------- */
+function renderLog(){
+  const wrap = document.getElementById('logWrap');
+  if(!wrap) return;
+  if(!entries.length){ wrap.innerHTML = '<p class="empty">No entries logged yet on this device or synced from others.</p>'; return; }
+  const recent = entries.slice(-30).reverse();
+  let html = `<div class="logwrap"><table class="logtable"><thead><tr>
+    <th>Time</th><th>Day</th><th>Athlete</th><th>Station/Event</th><th>Eval</th><th>Detail</th>
+  </tr></thead><tbody>`;
+  recent.forEach(e=>{
+    const t = new Date(e.ts);
+    const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    const detail = Object.entries(e.data||{}).map(([k,v])=>`${k}:${v}`).join(' · ');
+    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+nameForPinny(e.athlete):''}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${e.evaluator}</td><td>${detail}</td></tr>`;
+  });
+  html += `</tbody></table></div><p class="synctag">Showing last 30 of ${entries.length} synced entries.</p>`;
+  wrap.innerHTML = html;
+}
+function nameForPinny(pinny){
+  const a = roster.find(r=> String(r.pinny)===String(pinny));
+  return a ? a.name : null;
+}
+function toCsv(){
+  const cols = ['ts','session','athlete','athleteName','evaluator','group','type','station','data'];
+  const rows = [cols.join(',')];
+  entries.forEach(e=>{
+    const row = [e.ts,e.session,e.athlete, nameForPinny(e.athlete)||'', e.evaluator,e.group,e.type,e.station, JSON.stringify(e.data).replace(/"/g,'""')];
+    rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
+  });
+  return rows.join('\n');
+}
+function exportCsv(){
+  const blob = new Blob([toCsv()], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `geegees-tryout-log-${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+async function refreshFromCloud(){
+  await loadEntries();
+  toast("Log refreshed");
+}
+
+/* ---------------------------------------------------------------
+   MASTER LOG CARD (appended once, persists across re-renders)
+---------------------------------------------------------------- */
+function renderLogCard(){
+  const main = document.getElementById('mainArea');
+  const card = document.createElement('details');
+  card.className = 'card logcard';
+  card.innerHTML = `<summary>Day Log (live, synced across every evaluator's tablet)</summary>
+    <div id="logWrap"></div>
+    <div class="exportbar">
+      <button id="refreshBtn">Refresh now</button>
+      <button id="exportBtn">Export full CSV</button>
+    </div>`;
+  main.appendChild(card);
+  document.getElementById('refreshBtn').onclick = refreshFromCloud;
+  document.getElementById('exportBtn').onclick = exportCsv;
+  renderLog();
+}
+
+/* ---------------------------------------------------------------
+   SIMULATION / DRY-RUN TOOLS
+   Generates plausible station + scrimmage entries for the real
+   roster, spread across 5 evaluators (EV1–EV5, one per station),
+   and writes them to the same shared backend evaluators use.
+   For test data only — pair with Clear All Synced Data before
+   the real tryout day.
+---------------------------------------------------------------- */
+function randRange(min,max){ return +(Math.random()*(max-min)+min).toFixed(2); }
+function simulateFieldValue(f){
+  if(f.type==='num'){
+    const id=(f.id||'').toLowerCase();
+    if(f.unit && f.unit.startsWith('/')){
+      const max = parseInt(f.unit.slice(1))||5;
+      return Math.max(0, Math.min(max, Math.round(randRange(max*0.5,max))));
+    }
+    if(f.unit==='sec'){
+      if(id.includes('t40')) return randRange(5.0,6.8);
+      if(id.includes('split10')) return randRange(1.5,2.2);
+      if(id.includes('shuttle')) return randRange(4.5,5.8);
+      if(id.includes('progtime')) return randRange(1.0,2.5);
+      if(id.includes('timetopull')) return randRange(0.8,2.0);
+      return randRange(0.8,3.5);
+    }
+    if(f.unit==='in'){
+      if(id.includes('reach')) return randRange(78,92);
+      if(id.includes('touch')) return randRange(98,118);
+      return randRange(60,100);
+    }
+    if(f.unit==='ct') return Math.floor(Math.random()*3);
+    return Math.floor(Math.random()*4);
+  }
+  if(f.type==='yn') return Math.random()<0.7;
+  if(f.type==='scale5') return Math.floor(Math.random()*3)+3;
+  if(f.type==='choice') return f.options[Math.floor(Math.random()*f.options.length)];
+  return '';
+}
+function generateSimulatedDay(sessionNum){
+  const sess = SESSIONS[sessionNum];
+  const pods = ['A','B','C','D','E'];
+  let tsBase = Date.now() - 1000*60*70;
+  // Simulate whoever's actually registered (everyone with a pinnie in the
+  // Sign-In roster) — not just the fixed 27-person seed list. Falls back to
+  // the seed roster only if nobody's been registered yet (e.g. testing
+  // stations before running registration at all).
+  const registered = roster.filter(a=>a.pinny);
+  const simRoster = registered.length ? registered.map(a=>({name:a.name, num:a.pinny})) : ROSTER;
+  const pinnyFor = (ath)=>{
+    const match = roster.find(r=> r.name.trim().toLowerCase() === ath.name.trim().toLowerCase());
+    return (match && match.pinny) ? match.pinny : ath.num;
+  };
+  if(sess.stations.length){
+    simRoster.forEach((ath, idx)=>{
+      const athleteNum = pinnyFor(ath);
+      const pod = pods[idx%5];
+      sess.stations.forEach((st, si)=>{
+        const evaluator = 'EV'+(si+1);
+        const data={}, fields=[];
+        st.fields.forEach(f=>{
+          if(f.type==='route'){
+            f.routes.forEach(r=>{
+              const v = Math.floor(Math.random()*3)+3;
+              data[r]=v; fields.push({label:r, type:'route', value:v});
+            });
+          } else {
+            const v = simulateFieldValue(f);
+            data[f.label]=v;
+            if(f.type==='scale5' || f.type==='num') fields.push({label:f.label, type:f.type, value:v});
+          }
+        });
+        tsBase += 1000*15;
+        entries.push({ id:uid(), ts:new Date(tsBase).toISOString(), evaluator, group:pod,
+          session: sess.label, athlete: athleteNum, type:'Station', tag:st.tag, stationCode:st.code, station:st.name, data, fields });
+      });
+      if(sess.scrimmage && Math.random()<0.85){
+        const n = Math.floor(Math.random()*3)+1;
+        for(let i=0;i<n;i++){
+          const cat = Math.random()<0.5 ? 'offense':'defense';
+          const list = SCRIMMAGE_EVENTS[cat];
+          const ev = list[Math.floor(Math.random()*list.length)];
+          tsBase += 1000*20;
+          entries.push({ id:uid(), ts:new Date(tsBase).toISOString(), evaluator:'EV-SCRIM', group:pod,
+            session:sess.label, athlete:athleteNum, type:'Scrimmage +/-', tag: cat==='offense'?'SCRIM-OFF':'SCRIM-DEF', station:cat,
+            data:{ event:ev.label, points:ev.pts } });
+        }
+        tsBase += 1000*10;
+        entries.push({ id:uid(), ts:new Date(tsBase).toISOString(), evaluator:'EV-SCRIM', group:pod,
+          session:sess.label, athlete:athleteNum, type:'TCS', tag:'TCS', station:'TCS', data:{ score: Math.floor(Math.random()*2)+3 } });
+      }
+    });
+  } else {
+    simRoster.forEach((ath, idx)=>{
+      const athleteNum = pinnyFor(ath);
+      const pod = pods[idx%5];
+      const n = Math.floor(Math.random()*4)+2;
+      for(let i=0;i<n;i++){
+        const cat = Math.random()<0.5 ? 'offense':'defense';
+        const list = SCRIMMAGE_EVENTS[cat];
+        const ev = list[Math.floor(Math.random()*list.length)];
+        tsBase += 1000*20;
+        entries.push({ id:uid(), ts:new Date(tsBase).toISOString(), evaluator:'EV-SCRIM', group:pod,
+          session:sess.label, athlete:athleteNum, type:'Scrimmage +/-', tag: cat==='offense'?'SCRIM-OFF':'SCRIM-DEF', station:cat,
+          data:{ event:ev.label, points:ev.pts } });
+      }
+      tsBase += 1000*10;
+      entries.push({ id:uid(), ts:new Date(tsBase).toISOString(), evaluator:'EV-SCRIM', group:pod,
+        session:sess.label, athlete:athleteNum, type:'TCS', tag:'TCS', station:'TCS', data:{ score: Math.floor(Math.random()*2)+3 } });
+    });
+  }
+  return simRoster.length;
+}
+async function runSimulation(sessionNum){
+  const n = generateSimulatedDay(sessionNum);
+  const res = await saveEntries();
+  if(res===false) toast(`Simulated ${SESSIONS[sessionNum].label} but the save didn't sync — check connection and try again`);
+  else toast(`Simulated ${SESSIONS[sessionNum].label} — 5 evaluators × ${n} athletes`);
+  renderCoachLog(); renderSnapshot(); renderLiveTotals();
+}
+async function runSimulationAllSessions(){
+  const btn = document.getElementById('simRunAllBtn');
+  if(btn){ btn.disabled = true; btn.textContent = 'Simulating…'; }
+  // Generate all 7 days' data in memory first, then write it ONCE at the end
+  // rather than once per day. Seven back-to-back writes to the same key in
+  // under two seconds is exactly the kind of burst that can trip a backend
+  // write-rate limit or hit a transient network hiccup — this removes that
+  // risk entirely instead of hoping each of seven rapid saves succeeds.
+  Object.keys(SESSIONS).forEach(key=> generateSimulatedDay(parseInt(key)));
+  let ok = await saveEntries();
+  if(!ok){
+    await new Promise(r=>setTimeout(r, 800));
+    ok = await saveEntries(); // one retry — covers a transient failure
+  }
+  if(btn){ btn.disabled = false; btn.textContent = 'Simulate All 7 Days'; }
+  if(ok) toast(`Simulated all 7 days for ${(roster.filter(a=>a.pinny).length || ROSTER.length)} athletes`);
+  else toast(`Generated all 7 days locally, but the save still didn't sync after retrying — check connection and try Refresh`);
+  renderCoachLog(); renderSnapshot(); renderLiveTotals();
+}
+async function clearAllEntries(){
+  if(!await customConfirm('This clears every synced entry for all evaluators (test or real). Use this to reset the log before the actual tryout. Continue?')) return;
+  entries = [];
+  await saveEntries();
+  toast('Synced log cleared');
+  renderCoachLog(); renderSnapshot(); renderLiveTotals();
+}
+
+/* ---------------------------------------------------------------
+   HEAD COACH DASHBOARD
+   Reads the same shared backend — no separate data, just a
+   different view: totals, filters, and a per-athlete snapshot
+   built from Section 7.1's Quick Reference Model.
+---------------------------------------------------------------- */
+let coachFilters = { session:'all', type:'all', athlete:'' };
+
+function sessionCounts(){
+  const counts = {};
+  Object.values(SESSIONS).forEach(s=>counts[s.label]=0);
+  entries.forEach(e=>{ if(counts[e.session]!==undefined) counts[e.session]++; });
+  return counts;
+}
+function filteredEntries(){
+  return entries.filter(e=>{
+    if(coachFilters.session!=='all' && e.session!==coachFilters.session) return false;
+    if(coachFilters.type!=='all' && e.type!==coachFilters.type) return false;
+    if(coachFilters.athlete!=='' && String(e.athlete)!==String(coachFilters.athlete)) return false;
+    return true;
+  });
+}
+function computeSnapshot(athleteNum){
+  const rows = entries.filter(e=> String(e.athlete)===String(athleteNum));
+  if(!rows.length) return null;
+  const combine=[]; let skillSum=0, skillCount=0, compete=0, tcsSum=0, tcsCount=0;
+  rows.forEach(e=>{
+    if(e.type==='Station' && e.tag==='COMBINE'){
+      Object.entries(e.data).forEach(([k,v])=>{ if(v!=='' && v!==null && v!==undefined) combine.push(`${e.session} ${k}: ${v}`); });
+    }
+    if(e.fields) e.fields.forEach(f=>{
+      if(f.type==='scale5' || f.type==='route'){ skillSum += Number(f.value); skillCount++; }
+    });
+    if(e.type==='Scrimmage +/-' || e.type==='FIQ') compete += Number(e.data.points)||0;
+    if(e.type==='TCS'){ tcsSum += Number(e.data.score)||0; tcsCount++; }
+  });
+  return {
+    total: rows.length, combine,
+    skillAvg: skillCount ? (skillSum/skillCount).toFixed(2) : '—',
+    compete: compete>0? '+'+compete : compete,
+    tcsAvg: tcsCount ? (tcsSum/tcsCount).toFixed(2) : '—',
+    rows: rows.slice().reverse()
+  };
+}
+function stationBreakdown(){
+  const dayLabels = Object.values(SESSIONS).map(s=>s.label);
+  const stationCodes = ['S1','S2','S3','S4','S5'];
+  const rowKeys = [...stationCodes, 'Scrimmage +/-', 'TCS', 'FIQ'];
+  const matrix = {};
+  rowKeys.forEach(rk=>{ matrix[rk] = {}; dayLabels.forEach(d=>matrix[rk][d]=0); });
+  entries.forEach(e=>{
+    if(e.type==='Station' && e.stationCode && matrix[e.stationCode] && matrix[e.stationCode][e.session]!==undefined){
+      matrix[e.stationCode][e.session]++;
+    } else if(matrix[e.type] && matrix[e.type][e.session]!==undefined){
+      matrix[e.type][e.session]++;
+    }
+  });
+  const totals = {};
+  dayLabels.forEach(d=>{ totals[d] = rowKeys.reduce((sum,rk)=> sum + matrix[rk][d], 0); });
+  return { dayLabels, rowKeys, matrix, totals };
+}
+function renderLiveTotals(){
+  const el = document.getElementById('liveTotalsGrid');
+  if(!el) return;
+  const counts = sessionCounts();
+  el.innerHTML = Object.entries(counts).map(([label,n])=>
+    `<div class="statbox"><span class="n">${n}</span><span class="l">${label}</span></div>`).join('');
+  const brk = document.getElementById('stationBreakdownWrap');
+  if(brk){
+    const {dayLabels, rowKeys, matrix, totals} = stationBreakdown();
+    let html = `<div style="overflow-x:auto"><table class="roster"><thead><tr><th>Type</th>` +
+      dayLabels.map(d=>`<th>${d}</th>`).join('') + `</tr></thead><tbody>`;
+    rowKeys.forEach(rk=>{
+      html += `<tr><td>${rk}</td>` + dayLabels.map(d=>`<td>${matrix[rk][d]}</td>`).join('') + `</tr>`;
+    });
+    html += `<tr style="font-weight:800;border-top:2px solid var(--line)"><td>Total</td>` +
+      dayLabels.map(d=>`<td>${totals[d]}</td>`).join('') + `</tr>`;
+    html += `</tbody></table></div>`;
+    brk.innerHTML = html;
+  }
+}
+function renderCoachDashboard(){
+  const main = document.getElementById('mainArea');
+  const counts = sessionCounts();
+  const typeOptions = ['all','Station','Scrimmage +/-','FIQ','TCS'];
+  let html = `<details class="card"><summary>Test Tools (dry-run before tryout day)</summary>
+    <p class="focus" style="margin-top:8px">Simulates every currently-registered athlete (falls back to the 27-person seed roster if nobody's registered yet). Entries use evaluators EV1–EV5 (one per station) plus EV-SCRIM for scrimmage/TCS, so they're easy to spot and clear before the real thing.</p>
+    <div class="filterbar">
+      <select id="simSession">` +
+        Object.keys(SESSIONS).map(k=>`<option value="${k}">${SESSIONS[k].label} — ${SESSIONS[k].name}</option>`).join('') +
+      `</select>
+      <button id="simRunBtn">Run Simulation</button>
+      <button id="simRunAllBtn">Simulate All 7 Days</button>
+    </div>
+    <div class="exportbar"><button id="clearBtn">Clear All Synced Data</button></div>
+  </details>
+
+  <div class="card"><h2>Live Totals</h2>
+    <p class="focus">Entries synced from every evaluator's tablet, updated automatically every few seconds.</p>
+    <div class="statgrid" id="liveTotalsGrid"></div>
+    <p class="focus" style="margin-top:12px">Breaks the day-level total above into what it's actually made of — reps at each station, plus scrimmage +/- events, TCS scores, and FIQ events. The Total row at the bottom should match the number in the box above for that day.</p>
+    <div id="stationBreakdownWrap"></div>
+  </div>
+
+  <div class="card"><h2>Athlete Snapshot</h2>
+    <p class="focus">Combine numbers, average skill grade, cumulative scrimmage compete index, and TCS average — pulled live from every logged rep for this athlete number.</p>
+    <div class="filterbar">
+      <input id="snapAthlete" type="text" placeholder="Athlete # (pinnie) or name" value="${coachFilters.athlete}">
+    </div>
+    <div id="snapshotArea"></div>
+  </div>
+
+  <div class="card"><h2>Full Log</h2>
+    <div class="filterbar">
+      <select id="filterSession"><option value="all">All days</option>` +
+        Object.values(SESSIONS).map(s=>`<option value="${s.label}" ${coachFilters.session===s.label?'selected':''}>${s.label} — ${s.name}</option>`).join('') +
+      `</select>
+      <select id="filterType">` +
+        typeOptions.map(t=>`<option value="${t}" ${coachFilters.type===t?'selected':''}>${t==='all'?'All types':t}</option>`).join('') +
+      `</select>
+    </div>
+    <div id="coachLogWrap"></div>
+    <div class="exportbar">
+      <button id="coachRefreshBtn">Refresh now</button>
+      <button id="coachExportBtn">Export full CSV</button>
+    </div>
+  </div>`;
+  main.innerHTML = html;
+
+  document.getElementById('snapAthlete').oninput = (e)=>{ coachFilters.athlete = e.target.value; renderSnapshot(); };
+  document.getElementById('filterSession').onchange = (e)=>{ coachFilters.session = e.target.value; renderCoachLog(); };
+  document.getElementById('filterType').onchange = (e)=>{ coachFilters.type = e.target.value; renderCoachLog(); };
+  document.getElementById('coachRefreshBtn').onclick = refreshFromCloud;
+  document.getElementById('coachExportBtn').onclick = exportCsv;
+  document.getElementById('simRunBtn').onclick = ()=>{
+    const s = parseInt(document.getElementById('simSession').value);
+    runSimulation(s);
+  };
+  document.getElementById('simRunAllBtn').onclick = runSimulationAllSessions;
+  document.getElementById('clearBtn').onclick = clearAllEntries;
+
+  renderSnapshot();
+  renderCoachLog();
+  renderLiveTotals();
+}
+function renderSnapshot(){
+  const el = document.getElementById('snapshotArea');
+  if(!el) return;
+  const raw = String(coachFilters.athlete).trim();
+  if(raw===''){ el.innerHTML = '<p class="empty">Enter an athlete number or name to see their snapshot.</p>'; return; }
+  let pinny = raw;
+  let displayName = nameForPinny(raw);
+  if(!/^\d+$/.test(raw)){
+    const matches = roster.filter(r=> r.name.toLowerCase().includes(raw.toLowerCase()));
+    if(matches.length===0){ el.innerHTML = '<p class="empty">No athlete matches that name.</p>'; return; }
+    if(matches.length>1){
+      el.innerHTML = `<p class="focus" style="margin:0 0 8px 0">${matches.length} athletes match "${raw}" — tap the one you mean.</p>
+        <div class="comparechips">` +
+        matches.map(m=>`<button class="comparechip" style="border:none;cursor:pointer" data-picksnap="${m.pinny}">#${m.pinny} ${m.name}</button>`).join('') +
+        `</div>`;
+      document.querySelectorAll('[data-picksnap]').forEach(b=>{
+        b.onclick = ()=>{ coachFilters.athlete = String(b.dataset.picksnap); document.getElementById('snapAthlete').value = coachFilters.athlete; renderSnapshot(); };
+      });
+      return;
+    }
+    pinny = matches[0].pinny; displayName = matches[0].name;
+  }
+  const snap = computeSnapshot(pinny);
+  const label = displayName ? `${displayName} — #${pinny}` : `Athlete #${pinny}`;
+  if(!snap){ el.innerHTML = `<p class="empty">No entries yet for ${label}.</p>`; return; }
+  el.innerHTML = `<p style="font-weight:800;font-size:14px;margin:0 0 10px 0">${label}</p>
+    <div class="snapgrid">
+      <div class="snapbox"><span class="l">Skill Grade Avg</span><span class="v">${snap.skillAvg}</span></div>
+      <div class="snapbox"><span class="l">Compete (+/-)</span><span class="v">${snap.compete}</span></div>
+      <div class="snapbox"><span class="l">TCS Avg</span><span class="v">${snap.tcsAvg}</span></div>
+      <div class="snapbox"><span class="l">Total Reps Logged</span><span class="v">${snap.total}</span></div>
+    </div>
+    <div class="snapbox"><span class="l">Combine Numbers</span>
+      <div class="combinelist">${snap.combine.length ? snap.combine.join('<br>') : 'None logged yet'}</div>
+    </div>`;
+}
+function renderCoachLog(){
+  const el = document.getElementById('coachLogWrap');
+  if(!el) return;
+  const list = filteredEntries().slice(-200).reverse();
+  if(!list.length){ el.innerHTML = '<p class="empty">No entries match this filter yet.</p>'; return; }
+  let html = `<div class="logwrap"><table class="logtable"><thead><tr>
+    <th>Time</th><th>Day</th><th>Athlete</th><th>Type</th><th>Station/Event</th><th>Eval</th><th>Detail</th>
+  </tr></thead><tbody>`;
+  list.forEach(e=>{
+    const t = new Date(e.ts);
+    const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+    const detail = Object.entries(e.data||{}).map(([k,v])=>`${k}:${v}`).join(' · ');
+    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+nameForPinny(e.athlete):''}</td><td>${e.type}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${e.evaluator}</td><td>${detail}</td></tr>`;
+  });
+  html += `</tbody></table></div><p class="synctag">Showing last ${list.length} of ${filteredEntries().length} filtered entries (${entries.length} total synced).</p>`;
+  el.innerHTML = html;
+}
+
+/* ---------------------------------------------------------------
+   MAIN RENDER
+---------------------------------------------------------------- */
+/* ---------------------------------------------------------------
+   SIGN-IN & PINNIE ASSIGNMENT
+   Shares the same top session tabs (S1–S7) as the day selector.
+   Separate storage key from tryout entries — this is roster +
+   attendance + pinnie identity, not station data.
+---------------------------------------------------------------- */
+const CHECKIN_KEY = 'geegees-checkin-roster';
+let roster = [];
+let rosterSyncing = false;
+state.checkinSearch = '';
+state.checkinShowLoader = true;
+state.checkinUnpaidOnly = false;
+state.walkOnName = '';
+state.walkOnYear = '';
+state.walkOnPos = [];
+state.walkOnPinny = '';
+
+function interpretPaid(raw){
+  if(raw===undefined || raw===null) return undefined;
+  const v = String(raw).trim().toLowerCase();
+  if(['paid','y','yes','true','1','✓','x'].includes(v)) return true;
+  if(['unpaid','n','no','false','0','owing','due'].includes(v)) return false;
+  return undefined;
+}
+function looksLikeHeaderRow(cols){
+  const first = (cols[0]||'').trim().toLowerCase();
+  const rest = cols.slice(1).map(c=>c.trim().toLowerCase());
+  return ['#','no','no.','num','number'].includes(first) && rest.includes('name');
+}
+function parseRosterText(text){
+  return text.split('\n').map(l=>l.trim()).filter(l=>l.length)
+    .filter(line=> !looksLikeHeaderRow(line.split('\t')))
+    .map((line, idx)=>{
+    const cols = line.split('\t').map(c=>c.trim());
+    let listNum, name, year, posCols, paidRaw;
+    if(cols.length>=4 && /^\d+$/.test(cols[0])){
+      listNum=parseInt(cols[0]); name=cols[1]; year=cols[2]; posCols=cols.slice(3);
+    } else if(cols.length>=3){
+      listNum=idx+1; name=cols[0]; year=cols[1]; posCols=cols.slice(2);
+    } else {
+      listNum=idx+1; name=cols[0]||line; year=''; posCols=[];
+    }
+    // A trailing column that reads as a payment indicator (Paid/Unpaid/Y/N/etc.)
+    // gets split off instead of getting folded into the position text.
+    if(posCols.length>1 && interpretPaid(posCols[posCols.length-1])!==undefined){
+      paidRaw = posCols[posCols.length-1];
+      posCols = posCols.slice(0,-1);
+    }
+    return { listNum, name, year, pos: posCols.join(', '), paidRaw };
+  }).filter(r=>r.name);
+}
+async function withFreshRoster(mutator){
+  let current;
+  try{
+    const res = await cloudGet(CHECKIN_KEY);
+    current = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ current = roster.slice(); }
+  const updated = mutator(current) || current;
+  roster = updated;
+  try{
+    const res = await storageSet(CHECKIN_KEY, JSON.stringify(updated), true);
+    if(!res) toast('Saved locally — sync failed');
+  }catch(e){ toast('Saved locally — sync failed'); }
+  renderCheckinMain();
+}
+async function loadRosterFromCloud(){
+  try{
+    const res = await cloudGet(CHECKIN_KEY);
+    roster = res && res.value ? JSON.parse(res.value) : [];
+  }catch(e){ roster = []; }
+}
+async function backgroundPollRoster(){
+  if(rosterSyncing) return; rosterSyncing = true;
+  try{
+    const res = await cloudGet(CHECKIN_KEY);
+    const fresh = res && res.value ? res.value : '[]';
+    const changed = fresh !== JSON.stringify(roster);
+    if(changed){
+      roster = JSON.parse(fresh);
+      if(state.viewMode==='checkin'){
+        // Prefer the lightweight table-only refresh so it never disturbs
+        // whatever's focused (e.g. mid-typing in the search box). Only
+        // fall back to a full rebuild if the table structure doesn't exist
+        // yet (roster just went from empty to populated).
+        if(document.getElementById('checkinTableWrap')) renderCheckinTable();
+        else renderCheckinMain();
+      }
+    }
+    updateSyncStatus('live');
+  }catch(e){ updateSyncStatus('offline'); }
+  rosterSyncing = false;
+}
+setInterval(backgroundPollRoster, 6000);
+
+function wireWalkOnInputs(){
+  document.getElementById('walkOnName').oninput = (e)=>{ state.walkOnName = e.target.value; };
+  document.getElementById('walkOnYear').oninput = (e)=>{ state.walkOnYear = e.target.value; };
+  document.getElementById('walkOnPinny').oninput = (e)=>{ state.walkOnPinny = e.target.value; };
+  document.querySelectorAll('[data-walkonpos]').forEach(cb=>{
+    cb.onchange = ()=>{
+      const p = cb.dataset.walkonpos;
+      const i = state.walkOnPos.indexOf(p);
+      if(cb.checked && i<0) state.walkOnPos.push(p);
+      else if(!cb.checked && i>=0) state.walkOnPos.splice(i,1);
+    };
+  });
+  document.getElementById('addWalkOnBtn').onclick = ()=> addWalkOn(state.walkOnName, state.walkOnYear, state.walkOnPos, state.walkOnPinny);
+}
+async function addWalkOn(name, year, positions, pinnyRaw){
+  name = (name||'').trim();
+  if(!name){ toast('Enter a name first'); return; }
+  const pos = (positions||[]).join(', ');
+  let pinny = null;
+  const trimmedPinny = String(pinnyRaw||'').trim();
+  if(trimmedPinny!==''){
+    const n = parseInt(trimmedPinny);
+    if(isNaN(n) || n<1){ toast('Enter a valid pinnie number, or leave it blank'); return; }
+    pinny = n;
+  }
+  let added = true;
+  await withFreshRoster(current=>{
+    if(current.some(a=>a.name.trim().toLowerCase()===name.toLowerCase())){
+      toast(`${name} is already on the roster`); added = false; return current;
+    }
+    if(pinny!==null){
+      const conflict = current.find(a=>a.pinny===pinny);
+      if(conflict){ toast(`Pinnie #${pinny} is already assigned to ${conflict.name}`); added = false; return current; }
+    }
+    const nextListNum = current.length ? Math.max(...current.map(a=>a.listNum))+1 : 1;
+    current.push({ listNum:nextListNum, name, year:(year||'').trim(), pos,
+      pinny, pinnyAssignedAt: pinny? new Date().toISOString() : null, paid:false, paidAt:null, attendance:{} });
+    return current;
+  });
+  if(added){
+    toast(`${name} added to the roster${pinny? ' with pinnie #'+pinny : ''} — check them in below`);
+    state.walkOnName = ''; state.walkOnYear = ''; state.walkOnPos = []; state.walkOnPinny = '';
+  }
+}
+async function loadOrUpdateRoster(text){
+  const parsed = parseRosterText(text);
+  if(!parsed.length){ toast('No rows found — check the pasted text'); return; }
+  let paidStatusesSet = 0;
+  await withFreshRoster(current=>{
+    const byName = new Map(current.map(a=>[a.name.trim().toLowerCase(), a]));
+    parsed.forEach(p=>{
+      const key = p.name.trim().toLowerCase();
+      const paidVal = interpretPaid(p.paidRaw);
+      if(byName.has(key)){
+        const existing = byName.get(key);
+        existing.listNum = p.listNum; existing.year = p.year; existing.pos = p.pos;
+        if(paidVal !== undefined && existing.paid !== paidVal){
+          existing.paid = paidVal;
+          existing.paidAt = paidVal ? (existing.paidAt || new Date().toISOString()) : null;
+          paidStatusesSet++;
+        }
+      } else {
+        const paid = paidVal===true;
+        const listNumTaken = current.some(a=>a.listNum===p.listNum);
+        const safeListNum = listNumTaken
+          ? (current.length ? Math.max(...current.map(a=>a.listNum))+1 : 1)
+          : p.listNum;
+        current.push({ listNum:safeListNum, name:p.name, year:p.year, pos:p.pos,
+          pinny:null, pinnyAssignedAt:null, paid, paidAt: paid?new Date().toISOString():null, attendance:{} });
+        if(paidVal !== undefined) paidStatusesSet++;
+      }
+    });
+    return current;
+  });
+  toast(`Roster loaded — ${parsed.length} rows processed${paidStatusesSet?`, ${paidStatusesSet} payment statuses set`:''}`);
+  state.checkinShowLoader = false;
+  renderCheckinMain();
+}
+async function toggleCheckin(listNum){
+  const day = SESSIONS[state.session].label;
+  await withFreshRoster(current=>{
+    const a = current.find(x=>x.listNum===listNum);
+    if(!a) return current;
+    a.attendance = a.attendance || {};
+    const wasIn = a.attendance[day] && a.attendance[day].in;
+    if(!wasIn){
+      a.attendance[day] = { in:true, time:new Date().toISOString() };
+      if(!a.pinny){
+        const used = new Set(current.filter(x=>x.pinny).map(x=>x.pinny));
+        let n=1; while(used.has(n)) n++;
+        a.pinny = n; a.pinnyAssignedAt = new Date().toISOString();
+      }
+    } else {
+      a.attendance[day] = { in:false, time:a.attendance[day].time };
+    }
+    return current;
+  });
+}
+async function bulkCheckIn(){
+  const day = SESSIONS[state.session].label;
+  const targets = filteredRoster().map(a=>a.listNum);
+  if(!targets.length){ toast('No athletes match the current filter'); return; }
+  if(!await customConfirm(`Check in ${targets.length} athlete(s) for ${day}? Anyone not already checked in will be marked present, and assigned a pinnie if they don't have one yet.`)) return;
+  let checkedCount = 0;
+  await withFreshRoster(current=>{
+    const used = new Set(current.filter(x=>x.pinny).map(x=>x.pinny));
+    targets.forEach(listNum=>{
+      const a = current.find(x=>x.listNum===listNum);
+      if(!a) return;
+      a.attendance = a.attendance || {};
+      if(!(a.attendance[day] && a.attendance[day].in)){
+        a.attendance[day] = { in:true, time:new Date().toISOString() };
+        if(!a.pinny){
+          let n=1; while(used.has(n)) n++;
+          a.pinny = n; used.add(n); a.pinnyAssignedAt = new Date().toISOString();
+        }
+        checkedCount++;
+      }
+    });
+    return current;
+  });
+  toast(`Checked in ${checkedCount} athlete(s) for ${day}`);
+}
+async function togglePaid(listNum){
+  await withFreshRoster(current=>{
+    const a = current.find(x=>x.listNum===listNum);
+    if(!a) return current;
+    a.paid = !a.paid;
+    a.paidAt = a.paid ? new Date().toISOString() : null;
+    return current;
+  });
+}
+async function assignNextAvailablePinny(listNum){
+  await withFreshRoster(current=>{
+    const a = current.find(x=>x.listNum===listNum);
+    if(!a || a.pinny) return current;
+    const used = new Set(current.filter(x=>x.pinny).map(x=>x.pinny));
+    let n=1; while(used.has(n)) n++;
+    a.pinny = n; a.pinnyAssignedAt = new Date().toISOString();
+    return current;
+  });
+  toast(`Assigned pinnie #${roster.find(r=>r.listNum===listNum).pinny}`);
+}
+async function setPinnyManually(listNum, newVal){
+  const trimmed = String(newVal).trim();
+  if(trimmed===''){
+    await withFreshRoster(current=>{
+      const a = current.find(x=>x.listNum===listNum);
+      if(a){ a.pinny=null; a.pinnyAssignedAt=null; }
+      return current;
+    });
+    toast('Pinnie cleared');
+    return;
+  }
+  const n = parseInt(trimmed);
+  if(isNaN(n) || n<1){ toast('Enter a valid pinnie number'); renderCheckinMain(); return; }
+  await withFreshRoster(current=>{
+    const conflict = current.find(x=>x.pinny===n && x.listNum!==listNum);
+    if(conflict){ toast(`Pinnie #${n} is already assigned to ${conflict.name}`); return current; }
+    const a = current.find(x=>x.listNum===listNum);
+    if(a){ a.pinny=n; a.pinnyAssignedAt = a.pinnyAssignedAt || new Date().toISOString(); }
+    return current;
+  });
+}
+async function removeAthlete(listNum, name){
+  if(!await customConfirm(`Remove ${name} from the roster entirely? This can't be undone.`)) return;
+  let removedPinny = null;
+  await withFreshRoster(current=>{
+    const found = current.find(x=>x.listNum===listNum);
+    if(found) removedPinny = found.pinny;
+    return current.filter(x=>x.listNum!==listNum);
+  });
+  if(removedPinny) await clearDecision(removedPinny);
+  toast(`${name} removed`);
+}
+async function clearTodayCheckins(){
+  const day = SESSIONS[state.session].label;
+  if(!await customConfirm(`Clear all check-ins for ${day}? Pinnie numbers stay assigned. This can't be undone.`)) return;
+  await withFreshRoster(current=>{ current.forEach(a=>{ if(a.attendance) delete a.attendance[day]; }); return current; });
+  toast(`${day} check-ins cleared`);
+}
+async function simulateRegistration(){
+  const day = SESSIONS[state.session].label;
+  const walkins = Array.from({length:20}, (_,i)=>({
+    listNum: 28+i, name:`Walk-In ${i+1}`, year:'Walk-in', pos:'Unassigned'
+  }));
+  const seedRows = ROSTER.map(a=>({listNum:a.num, name:a.name, year:a.year, pos:a.pos})).concat(walkins);
+
+  await withFreshRoster(current=>{
+    const byName = new Map(current.map(a=>[a.name.trim().toLowerCase(), a]));
+    seedRows.forEach(p=>{
+      const key = p.name.trim().toLowerCase();
+      if(byName.has(key)){
+        const existing = byName.get(key);
+        existing.listNum = p.listNum; existing.year = p.year; existing.pos = p.pos;
+      } else {
+        const rec = { listNum:p.listNum, name:p.name, year:p.year, pos:p.pos, pinny:null, pinnyAssignedAt:null, paid:false, paidAt:null, attendance:{} };
+        current.push(rec);
+        byName.set(key, rec);
+      }
+    });
+    // Random unique 1–3 digit pinnies (1–999), not sequential — this is meant to
+    // stress-test the conflict logic the way real walk-in registration would,
+    // where numbers get handed out in whatever order people show up.
+    const usedNumbers = new Set(current.filter(a=>a.pinny).map(a=>a.pinny));
+    seedRows.forEach(p=>{
+      const rec = byName.get(p.name.trim().toLowerCase());
+      if(rec.pinny) usedNumbers.delete(rec.pinny);
+    });
+    seedRows.forEach(p=>{
+      const rec = byName.get(p.name.trim().toLowerCase());
+      let n;
+      do{ n = Math.floor(Math.random()*999)+1; }while(usedNumbers.has(n));
+      usedNumbers.add(n);
+      rec.pinny = n; rec.pinnyAssignedAt = new Date().toISOString();
+      rec.attendance = rec.attendance || {};
+      rec.attendance[day] = { in:true, time:new Date().toISOString() };
+      // Realistic payment mix for testing: ~75% paid, rest still owing.
+      rec.paid = Math.random() < 0.75;
+      rec.paidAt = rec.paid ? new Date().toISOString() : null;
+    });
+    return current;
+  });
+  toast(`Registered ${seedRows.length} athletes (27 roster + 20 walk-ins) with random pinnies for ${day}`);
+  state.checkinShowLoader = false;
+  renderCheckinMain();
+}
+async function resetRosterEverything(){
+  if(!await customConfirm('Reset ALL sign-in data? This permanently deletes the entire roster, every pinnie assignment, all check-in/payment history, and every Team Selection decision. This cannot be undone.')) return;
+  rosterSyncing = true; // hold off the background poll so it can't race this write
+  roster = [];
+  decisions = {};
+  state.checkinShowLoader = true;
+  renderCheckinMain();
+  try{
+    const res1 = await storageSet(CHECKIN_KEY, JSON.stringify([]), true);
+    const res2 = await storageSet(DECISIONS_KEY, JSON.stringify({}), true);
+    if(!res1 || !res2){ toast('Reset did not fully sync — check connection and try again'); }
+    else toast('Roster, pinnies, check-ins, and team decisions all cleared');
+  }catch(e){
+    toast('Reset did not sync — check connection and try again');
+  }
+  rosterSyncing = false;
+}
+function exportCheckinCsv(){
+  const dayKeys = Object.values(SESSIONS).map(s=>s.label);
+  const cols = ['pinny','listNum','name','year','pos','paid','paidAt', ...dayKeys.map(d=>d+'_present'), ...dayKeys.map(d=>d+'_time')];
+  const rows = [cols.join(',')];
+  roster.slice().sort((a,b)=>(a.pinny||9999)-(b.pinny||9999)).forEach(a=>{
+    const row = [a.pinny||'', a.listNum, a.name, a.year, a.pos, a.paid?'Y':'N', a.paidAt||'',
+      ...dayKeys.map(d=> (a.attendance && a.attendance[d] && a.attendance[d].in) ? 'Y' : 'N'),
+      ...dayKeys.map(d=> (a.attendance && a.attendance[d] && a.attendance[d].time) || '')
+    ];
+    rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
+  });
+  const blob = new Blob([rows.join('\n')], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=`geegees-checkin-${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+function filteredRoster(){
+  const q = state.checkinSearch.trim().toLowerCase();
+  let list = roster.slice();
+  if(q) list = list.filter(a=> a.name.toLowerCase().includes(q) || String(a.pinny||'').includes(q) || String(a.listNum).includes(q));
+  if(state.checkinUnpaidOnly) list = list.filter(a=> !a.paid);
+  return list.sort((a,b)=> a.name.localeCompare(b.name));
+}
+function checkinTableHtml(list, day){
+  let html = `<div style="overflow-x:auto"><table class="roster"><thead><tr>
+    <th>Pinnie</th><th>Name</th><th>Year</th><th>Position(s)</th><th>Status</th><th>Paid</th><th></th>
+  </tr></thead><tbody>`;
+  list.forEach(a=>{
+    const rec = a.attendance && a.attendance[day];
+    const isIn = rec && rec.in;
+    const timeStr = rec && rec.time ? new Date(rec.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+    html += `<tr class="${isIn?'present':''}">
+      <td>
+        <div class="numctl-sm">
+          <button data-pinnydec="${a.listNum}" ${a.pinny?'':'disabled'}>−</button>
+          <input class="pinnyedit" data-listnum="${a.listNum}" value="${a.pinny||''}" placeholder="—" inputmode="numeric">
+          <button data-pinnyinc="${a.listNum}">+</button>
+        </div>
+        ${a.pinny ? '' : `<button class="assignbtn" data-assign="${a.listNum}" title="Assign next available number">Assign</button>`}
+      </td>
+      <td><span class="rostername">${a.name}</span></td>
+      <td><span class="rosteryear">${a.year||''}</span></td>
+      <td><span class="rosterpos">${a.pos||''}</span></td>
+      <td>
+        <button class="presentbtn ${isIn?'on':''}" data-checkin="${a.listNum}">${isIn?'✓ Present':'Check In'}</button>
+        ${timeStr?`<span class="checktime">${timeStr}</span>`:''}
+      </td>
+      <td>
+        <button class="presentbtn ${a.paid?'on':''}" data-paid="${a.listNum}">${a.paid?'✓ Paid':'Unpaid'}</button>
+      </td>
+      <td><button class="rmbtn" data-remove="${a.listNum}" data-name="${a.name.replace(/"/g,'&quot;')}" title="Remove athlete">✕</button></td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>
+  <p class="empty" style="display:${list.length?'none':'block'}">No athletes match that search.</p>`;
+  return html;
+}
+function wireCheckinTableRows(){
+  document.querySelectorAll('[data-checkin]').forEach(b=>{
+    b.onclick = ()=> toggleCheckin(parseInt(b.dataset.checkin));
+  });
+  document.querySelectorAll('[data-paid]').forEach(b=>{
+    b.onclick = ()=> togglePaid(parseInt(b.dataset.paid));
+  });
+  document.querySelectorAll('[data-remove]').forEach(b=>{
+    b.onclick = ()=> removeAthlete(parseInt(b.dataset.remove), b.dataset.name);
+  });
+  document.querySelectorAll('.pinnyedit').forEach(inp=>{
+    inp.onchange = ()=> setPinnyManually(parseInt(inp.dataset.listnum), inp.value);
+  });
+  document.querySelectorAll('[data-assign]').forEach(b=>{
+    b.onclick = ()=> assignNextAvailablePinny(parseInt(b.dataset.assign));
+  });
+  document.querySelectorAll('[data-pinnyinc]').forEach(b=>{
+    b.onclick = ()=>{
+      const listNum = parseInt(b.dataset.pinnyinc);
+      const a = roster.find(x=>x.listNum===listNum);
+      if(!a || !a.pinny){ assignNextAvailablePinny(listNum); return; }
+      setPinnyManually(listNum, String(a.pinny+1));
+    };
+  });
+  document.querySelectorAll('[data-pinnydec]').forEach(b=>{
+    b.onclick = ()=>{
+      const listNum = parseInt(b.dataset.pinnydec);
+      const a = roster.find(x=>x.listNum===listNum);
+      if(!a || !a.pinny || a.pinny<=1) return;
+      setPinnyManually(listNum, String(a.pinny-1));
+    };
+  });
+}
+// Only rebuilds the table + the visible-count button — never touches the
+// search input itself, so typing doesn't lose focus on every keystroke
+// (rebuilding an <input> via innerHTML always drops focus, even though its
+// value attribute is correct — the DOM node is a brand new element).
+function renderCheckinTable(){
+  const day = SESSIONS[state.session].label;
+  const list = filteredRoster();
+  const wrap = document.getElementById('checkinTableWrap');
+  if(wrap) wrap.innerHTML = checkinTableHtml(list, day);
+  const bulkBtn = document.getElementById('bulkCheckinBtn');
+  if(bulkBtn) bulkBtn.textContent = `Check In All Visible (${list.length})`;
+  wireCheckinTableRows();
+}
+function renderCheckinMain(){
+  const main = document.getElementById('mainArea');
+  const day = SESSIONS[state.session].label;
+  const dayName = SESSIONS[state.session].name;
+  const list = filteredRoster();
+  const total = roster.length;
+  const present = roster.filter(a=> a.attendance && a.attendance[day] && a.attendance[day].in).length;
+  const pinniesAssigned = roster.filter(a=>a.pinny).length;
+  const paidCount = roster.filter(a=>a.paid).length;
+
+  let html = `<details class="card"><summary>Test Tools (dry-run before tryout day)</summary>
+    <p class="focus" style="margin-top:8px">Registers the 27-athlete roster plus 20 simulated on-site walk-ins, each checked in for ${day} with a random unique 1–3 digit pinnie (not sequential — mirrors real walk-in registration order).</p>
+    <div class="rowrow"><button class="logbtn" id="simRegBtn" style="width:auto;padding:11px 16px">Simulate Registration (27 + 20 walk-ins)</button></div>
+  </details>
+
+  <div class="card">
+    <h2>Add Walk-On</h2>
+    <p class="focus">Someone not on the imported list yet — add them here, then check them in below like anyone else.</p>
+    <div class="filterbar">
+      <input id="walkOnName" placeholder="Name" value="${state.walkOnName}">
+      <input id="walkOnYear" placeholder="Year (optional)" value="${state.walkOnYear}">
+      <input id="walkOnPinny" placeholder="Pinnie # (optional)" inputmode="numeric" value="${state.walkOnPinny}">
+    </div>
+    <div class="walkonpos">` +
+      POSITION_OPTIONS.map(p=>`<label class="poscheck"><input type="checkbox" data-walkonpos="${p}" ${state.walkOnPos.includes(p)?'checked':''}> ${p}</label>`).join('') +
+    `</div>
+    <div class="rowrow" style="margin-top:10px"><button class="logbtn" id="addWalkOnBtn" style="width:auto;padding:11px 16px">Add Walk-On</button></div>
+  </div>
+
+  <div class="card">
+    <button class="toggle-link" id="toggleLoaderBtn">${state.checkinShowLoader ? 'Hide' : 'Load / update roster'} ${state.checkinShowLoader?'▲':'▼'}</button>`;
+  if(state.checkinShowLoader){
+    html += `
+    <p class="focus" style="margin-top:8px">Paste the roster below — copy straight out of your Google Doc or spreadsheet. Expected columns per line: <b>Number, Name, Year, Position(s)</b>, and optionally a 5th column for payment status (tab-separated, one athlete per line). Accepted payment values: Paid/Unpaid, Y/N, Yes/No, or True/False — leave the column out or blank to skip it entirely. Matching is done by name, so re-pasting an updated list won't touch pinnie numbers, check-in history, or payment status already on file unless the new row explicitly sets one.</p>
+    <textarea class="rostertext" id="rosterText" placeholder="1&#9;Abigail Snider&#9;1st&#9;Receiver, Defender&#9;Paid
+2&#9;Alexandra Gagnon&#9;1st&#9;Center&#9;Unpaid"></textarea>
+    <div class="rowrow" style="margin-top:10px"><button class="logbtn" id="loadRosterBtn" style="width:auto;padding:11px 16px">Load / Update Roster</button></div>`;
+  }
+  html += `</div>`;
+
+  if(!roster.length){
+    html += `<div class="card"><p class="empty">No roster loaded yet. Paste your athlete list above, or add a walk-on above, to get started.</p></div>`;
+    main.innerHTML = html;
+    document.getElementById('simRegBtn').onclick = simulateRegistration;
+    wireWalkOnInputs();
+    document.getElementById('toggleLoaderBtn').onclick = ()=>{ state.checkinShowLoader = !state.checkinShowLoader; renderCheckinMain(); };
+    const loadBtn = document.getElementById('loadRosterBtn');
+    if(loadBtn) loadBtn.onclick = ()=> loadOrUpdateRoster(document.getElementById('rosterText').value);
+    return;
+  }
+
+  html += `<div class="card">
+    <h2>${day} — ${dayName}</h2>
+    <div class="statgrid" style="grid-template-columns:repeat(4,1fr)">
+      <div class="statbox"><span class="n">${present}/${total}</span><span class="l">Checked In</span></div>
+      <div class="statbox"><span class="n">${pinniesAssigned}</span><span class="l">Pinnies Assigned</span></div>
+      <div class="statbox"><span class="n">${total-pinniesAssigned}</span><span class="l">Awaiting Pinnie</span></div>
+      <div class="statbox"><span class="n">${paidCount}/${total}</span><span class="l">Paid</span></div>
+    </div>
+    <div class="filterbar">
+      <input id="checkinSearch" placeholder="Search by name, pinnie #, or list #" value="${state.checkinSearch}">
+      <button id="unpaidToggleBtn" class="presentbtn ${state.checkinUnpaidOnly?'on':''}" style="flex:0 0 auto">${state.checkinUnpaidOnly?'✓ Unpaid only':'Show unpaid only'}</button>
+      <button id="bulkCheckinBtn" class="ghost" style="flex:0 0 auto">Check In All Visible (${list.length})</button>
+    </div>
+    <div id="checkinTableWrap">${checkinTableHtml(list, day)}</div>
+    <div class="exportbar">
+      <button id="exportCheckinBtn">Export Full CSV</button>
+      <button id="clearDayBtn">Clear ${day} Check-Ins</button>
+    </div>
+  </div>
+
+  <div class="card dangerzone"><h2>Reset</h2>
+    <p class="focus">Wipes the entire roster, pinnie assignments, and all check-in history across every day. Use only before the tryout starts.</p>
+    <button id="resetRosterBtn">Reset Everything</button>
+  </div>`;
+
+  main.innerHTML = html;
+
+  document.getElementById('simRegBtn').onclick = simulateRegistration;
+  wireWalkOnInputs();
+  document.getElementById('toggleLoaderBtn').onclick = ()=>{ state.checkinShowLoader = !state.checkinShowLoader; renderCheckinMain(); };
+  const loadBtn = document.getElementById('loadRosterBtn');
+  if(loadBtn) loadBtn.onclick = ()=> loadOrUpdateRoster(document.getElementById('rosterText').value);
+  document.getElementById('checkinSearch').oninput = (e)=>{ state.checkinSearch = e.target.value; renderCheckinTable(); };
+  document.getElementById('unpaidToggleBtn').onclick = ()=>{ state.checkinUnpaidOnly = !state.checkinUnpaidOnly; renderCheckinMain(); };
+  document.getElementById('bulkCheckinBtn').onclick = bulkCheckIn;
+  document.getElementById('exportCheckinBtn').onclick = exportCheckinCsv;
+  document.getElementById('clearDayBtn').onclick = clearTodayCheckins;
+  document.getElementById('resetRosterBtn').onclick = resetRosterEverything;
+  wireCheckinTableRows();
+}
+
+/* ---------------------------------------------------------------
+   TEAM SELECTION — compare athletes and decide Team 1 / Team 2 /
+   Reserve / Release. Joins the Sign-In roster (identity + pinnie)
+   with the same skill/compete/TCS metrics the Head Coach dashboard
+   computes from station + scrimmage entries, keyed by pinnie —
+   the same "Athlete #" evaluators type at every station.
+   Decisions live in their own shared key so they persist
+   independently of the roster and the raw station data.
+---------------------------------------------------------------- */
+const DECISIONS_KEY = 'geegees-roster-decisions';
+let decisions = {};
+let decisionsSyncing = false;
+state.selectionSearch = '';
+state.selectionStatusFilter = 'all';
+state.selectionSort = 'name';
+state.selectionPositionFilter = 'all';
+state.compareQuery = '';
+state.compareList = [];
+state.compareMatches = [];
+
+const DECISION_LABELS = { team1:'Team 1', team2:'Team 2', reserve:'Reserve', release:'Release' };
+function statusLabel(status){ return DECISION_LABELS[status] || 'Undecided'; }
+
+async function withFreshDecisions(mutator){
+  let current;
+  try{
+    const res = await cloudGet(DECISIONS_KEY);
+    current = res && res.value ? JSON.parse(res.value) : {};
+  }catch(e){ current = {...decisions}; }
+  const updated = mutator(current) || current;
+  decisions = updated;
+  try{
+    const res = await storageSet(DECISIONS_KEY, JSON.stringify(updated), true);
+    if(!res) toast('Saved locally — sync failed');
+  }catch(e){ toast('Saved locally — sync failed'); }
+  renderSelectionMain();
+}
+async function loadDecisionsFromCloud(){
+  try{
+    const res = await cloudGet(DECISIONS_KEY);
+    decisions = res && res.value ? JSON.parse(res.value) : {};
+  }catch(e){ decisions = {}; }
+}
+async function backgroundPollDecisions(){
+  if(decisionsSyncing) return; decisionsSyncing = true;
+  try{
+    const res = await cloudGet(DECISIONS_KEY);
+    const fresh = res && res.value ? res.value : '{}';
+    const changed = fresh !== JSON.stringify(decisions);
+    if(changed){
+      decisions = JSON.parse(fresh);
+      if(state.viewMode==='selection'){
+        if(document.getElementById('selectionTableWrap')) renderSelectionTable();
+        else renderSelectionMain();
+      }
+    }
+    updateSyncStatus('live');
+  }catch(e){ updateSyncStatus('offline'); }
+  decisionsSyncing = false;
+}
+setInterval(backgroundPollDecisions, 6000);
+
+async function assignDecision(pinny, status){
+  const athlete = roster.find(r=>r.pinny===pinny);
+  await withFreshDecisions(current=>{
+    const existingNote = current[pinny] ? (current[pinny].note || '') : '';
+    current[pinny] = { status, decidedAt: new Date().toISOString(), name: athlete ? athlete.name : null, note: existingNote };
+    return current;
+  });
+}
+async function setDecisionNote(pinny, note){
+  const athlete = roster.find(r=>r.pinny===pinny);
+  await withFreshDecisions(current=>{
+    if(!current[pinny]) current[pinny] = { status:null, decidedAt:null, name: athlete?athlete.name:null, note:'' };
+    current[pinny].note = note;
+    current[pinny].name = athlete ? athlete.name : current[pinny].name;
+    return current;
+  });
+}
+async function clearDecision(pinny){
+  await withFreshDecisions(current=>{ delete current[pinny]; return current; });
+}
+// A pinnie can be reassigned to a different person entirely (roster reset,
+// re-registration, or just correcting a mistake), and nothing about the
+// decisions store on its own knows that happened. Rather than trust a raw
+// pinnie match, every read of a decision is checked against the name it was
+// recorded under — if the name on file no longer matches whoever currently
+// holds that pinnie, it's treated as no decision rather than silently
+// handed to the wrong athlete.
+function decisionFor(pinny, currentName){
+  const d = decisions[pinny];
+  if(!d) return null;
+  if(d.name && currentName && d.name.trim().toLowerCase() !== currentName.trim().toLowerCase()) return null;
+  return d;
+}
+function computeSelectionMetrics(pinny){
+  const rows = entries.filter(e=> String(e.athlete)===String(pinny));
+  let skillSum=0, skillCount=0, compete=0, tcsSum=0, tcsCount=0;
+  rows.forEach(e=>{
+    if(e.fields) e.fields.forEach(f=>{ if(f.type==='scale5' || f.type==='route'){ skillSum += Number(f.value); skillCount++; } });
+    if(e.type==='Scrimmage +/-' || e.type==='FIQ') compete += Number(e.data.points)||0;
+    if(e.type==='TCS'){ tcsSum += Number(e.data.score)||0; tcsCount++; }
+  });
+  return {
+    reps: rows.length,
+    skillAvg: skillCount ? skillSum/skillCount : null,
+    compete,
+    tcsAvg: tcsCount ? tcsSum/tcsCount : null
+  };
+}
+function selectionRoster(){
+  return roster.filter(a=>a.pinny).map(a=>{
+    const dec = decisionFor(a.pinny, a.name);
+    return {
+      pinny: a.pinny, name: a.name, year: a.year, pos: a.pos, paid: a.paid,
+      metrics: computeSelectionMetrics(a.pinny),
+      status: dec ? dec.status : null,
+      note: dec ? (dec.note || '') : ''
+    };
+  });
+}
+function distinctPositions(){
+  const set = new Set();
+  roster.forEach(a=>{ (a.pos||'').split(',').forEach(p=>{ const t=p.trim(); if(t) set.add(t); }); });
+  return Array.from(set).sort((a,b)=>a.localeCompare(b));
+}
+function filteredSelection(){
+  const q = state.selectionSearch.trim().toLowerCase();
+  let list = selectionRoster();
+  if(q) list = list.filter(a=> a.name.toLowerCase().includes(q) || String(a.pinny).includes(q) || (a.pos||'').toLowerCase().includes(q));
+  if(state.selectionStatusFilter==='undecided') list = list.filter(a=>!a.status);
+  else if(state.selectionStatusFilter!=='all') list = list.filter(a=>a.status===state.selectionStatusFilter);
+  if(state.selectionPositionFilter!=='all'){
+    const pf = state.selectionPositionFilter.toLowerCase();
+    list = list.filter(a=> (a.pos||'').toLowerCase().split(',').some(p=>p.trim()===pf));
+  }
+  const sortFns = {
+    name: (a,b)=> a.name.localeCompare(b.name),
+    position: (a,b)=> (a.pos||'').localeCompare(b.pos||'') || a.name.localeCompare(b.name),
+    skill: (a,b)=> (b.metrics.skillAvg||-999) - (a.metrics.skillAvg||-999),
+    compete: (a,b)=> b.metrics.compete - a.metrics.compete,
+    tcs: (a,b)=> (b.metrics.tcsAvg||-999) - (a.metrics.tcsAvg||-999)
+  };
+  return list.sort(sortFns[state.selectionSort] || sortFns.name);
+}
+function addToCompareByQuery(query){
+  const q = query.trim().toLowerCase();
+  if(!q){ toast('Type a name or pinnie number first'); return; }
+  const all = selectionRoster();
+  let matches = /^\d+$/.test(q)
+    ? all.filter(a=> String(a.pinny)===q)
+    : all.filter(a=> a.name.toLowerCase().includes(q));
+  if(matches.length===0){ state.compareMatches = []; toast('No athlete matches that search'); renderSelectionMain(); return; }
+  if(matches.length>1){
+    state.compareMatches = matches.map(a=>({pinny:a.pinny, name:a.name, pos:a.pos}));
+    renderSelectionMain();
+    return;
+  }
+  const m = matches[0];
+  if(!state.compareList.includes(m.pinny)) state.compareList.push(m.pinny);
+  state.compareQuery = ''; state.compareMatches = [];
+  renderSelectionMain();
+}
+function selectCompareMatch(pinny){
+  if(!state.compareList.includes(pinny)) state.compareList.push(pinny);
+  state.compareQuery = ''; state.compareMatches = [];
+  renderSelectionMain();
+}
+function toggleCompare(pinny){
+  const i = state.compareList.indexOf(pinny);
+  if(i>=0) state.compareList.splice(i,1);
+  else state.compareList.push(pinny);
+  renderSelectionMain();
+}
+function exportDecisionsCsv(){
+  const cols = ['pinny','name','year','pos','paid','decision','decidedAt','note','skillAvg','compete','tcsAvg','repsLogged'];
+  const rows = [cols.join(',')];
+  selectionRoster().sort((a,b)=>a.pinny-b.pinny).forEach(a=>{
+    const dec = decisionFor(a.pinny, a.name);
+    const row = [a.pinny, a.name, a.year, a.pos, a.paid?'Y':'N', dec?statusLabel(dec.status):'', dec?dec.decidedAt:'', dec?(dec.note||''):'',
+      a.metrics.skillAvg!==null? a.metrics.skillAvg.toFixed(2):'', a.metrics.compete, a.metrics.tcsAvg!==null? a.metrics.tcsAvg.toFixed(2):'', a.metrics.reps];
+    rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
+  });
+  const blob = new Blob([rows.join('\n')], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href=url; a.download=`geegees-team-decisions-${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+function fmtMetric(v){ return v===null || v===undefined ? '—' : v.toFixed(2); }
+function decideButtons(pinny, status){
+  return ['team1','team2','reserve','release'].map(s=>
+    `<button class="${s} ${status===s?'on':''}" data-decide="${pinny}" data-status="${s}">${statusLabel(s)}</button>`
+  ).join('');
+}
+function positionBreakdown(){
+  return distinctPositions().map(pos=>{
+    const athletes = selectionRoster().filter(a=> (a.pos||'').toLowerCase().split(',').some(p=>p.trim()===pos.toLowerCase()));
+    const c = {team1:0, team2:0, reserve:0, release:0, undecided:0};
+    athletes.forEach(a=>{ if(a.status) c[a.status]++; else c.undecided++; });
+    return { pos, total:athletes.length, ...c };
+  }).filter(r=>r.total>0);
+}
+function selectionTableHtml(list){
+  let html = `<div style="overflow-x:auto"><table class="roster"><thead><tr>
+    <th></th><th>Pinnie</th><th>Name</th><th>Position(s)</th><th>Skill</th><th>Compete</th><th>TCS</th><th>Status</th><th>Assign</th>
+  </tr></thead><tbody>`;
+  list.forEach(a=>{
+    html += `<tr>
+      <td><input type="checkbox" class="comparecheck" data-compare="${a.pinny}" ${state.compareList.includes(a.pinny)?'checked':''}></td>
+      <td><span class="pinnybadge">#${a.pinny}</span></td>
+      <td><span class="rostername">${a.name}</span><div class="rosteryear">${a.year||''} · ${a.paid?'Paid':'Unpaid'}</div></td>
+      <td><span class="rosterpos">${a.pos||''}</span></td>
+      <td>${fmtMetric(a.metrics.skillAvg)}</td>
+      <td>${a.metrics.compete>0?'+':''}${a.metrics.compete}</td>
+      <td>${fmtMetric(a.metrics.tcsAvg)}</td>
+      <td><span class="decisionbadge ${a.status||'undecided'}">${statusLabel(a.status)}</span></td>
+      <td><div class="decidebtns">${decideButtons(a.pinny, a.status)}</div></td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>
+  <p class="empty" style="display:${list.length?'none':'block'}">No athletes match this filter.</p>`;
+  return html;
+}
+function wireSelectionTableRows(){
+  document.querySelectorAll('[data-compare]').forEach(cb=>{
+    cb.onchange = ()=> toggleCompare(parseInt(cb.dataset.compare));
+  });
+  document.querySelectorAll('[data-decide]').forEach(b=>{
+    b.onclick = ()=> assignDecision(parseInt(b.dataset.decide), b.dataset.status);
+  });
+}
+// Table-only refresh, same reasoning as renderCheckinTable — rebuilding the
+// search <input> itself via a full re-render drops focus on every keystroke.
+function renderSelectionTable(){
+  const list = filteredSelection();
+  const wrap = document.getElementById('selectionTableWrap');
+  if(wrap) wrap.innerHTML = selectionTableHtml(list);
+  wireSelectionTableRows();
+}
+function renderSelectionMain(){
+  const main = document.getElementById('mainArea');
+  const list = filteredSelection();
+  const all = selectionRoster();
+  const counts = { team1:0, team2:0, reserve:0, release:0, undecided:0 };
+  all.forEach(a=>{ if(a.status) counts[a.status]++; else counts.undecided++; });
+
+  let html = `<div class="card"><h2>Team Selection</h2>
+    <p class="focus">Pulled from the Sign-In roster (identity + pinnie) joined with the skill grades, scrimmage compete score, and TCS average logged for that pinnie in Evaluator/Coach mode. Only checked-in athletes with a pinnie appear here.</p>
+    <div class="statgrid" style="grid-template-columns:repeat(5,1fr)">
+      <div class="statbox"><span class="n">${counts.team1}</span><span class="l">Team 1</span></div>
+      <div class="statbox"><span class="n">${counts.team2}</span><span class="l">Team 2</span></div>
+      <div class="statbox"><span class="n">${counts.reserve}</span><span class="l">Reserve</span></div>
+      <div class="statbox"><span class="n">${counts.release}</span><span class="l">Release</span></div>
+      <div class="statbox"><span class="n">${counts.undecided}</span><span class="l">Undecided</span></div>
+    </div>
+    <div style="overflow-x:auto"><table class="roster"><thead><tr>
+      <th>Position</th><th>Total</th><th>Team 1</th><th>Team 2</th><th>Reserve</th><th>Release</th><th>Undecided</th>
+    </tr></thead><tbody>` +
+      positionBreakdown().map(r=>`<tr>
+        <td><span class="rosterpos">${r.pos}</span></td><td>${r.total}</td><td>${r.team1}</td><td>${r.team2}</td><td>${r.reserve}</td><td>${r.release}</td><td>${r.undecided}</td>
+      </tr>`).join('') +
+    `</tbody></table></div>
+  </div>`;
+
+  const compareAthletes = all.filter(a=> state.compareList.includes(a.pinny));
+  html += `<div class="card"><h2>Compare &amp; Decide</h2>
+    <p class="focus">Pull up specific athletes by name or pinnie number — no need to scroll or filter the table below.</p>
+    <div class="filterbar">
+      <input id="compareQuery" placeholder="Add by name or pinnie #" value="${state.compareQuery}">
+      <button class="ghost" id="addCompareBtn" style="flex:0 0 auto">Add to Compare</button>
+    </div>`;
+  if(state.compareMatches.length){
+    html += `<div class="comparechips">` +
+      state.compareMatches.map(m=>
+        `<button class="comparechip" style="border:none;cursor:pointer" data-pickmatch="${m.pinny}">#${m.pinny} ${m.name}${m.pos?' — '+m.pos:''}</button>`
+      ).join('') +
+    `</div><p class="focus" style="margin-top:-4px">${state.compareMatches.length} athletes match "${state.compareQuery}" — tap the one you mean.</p>`;
+  }
+  if(compareAthletes.length){
+    html += `
+      <div class="comparechips">` +
+        compareAthletes.map(a=>`<span class="comparechip">#${a.pinny} ${a.name}<button data-uncompare="${a.pinny}">✕</button></span>`).join('') +
+      `</div>
+      <div class="comparegrid">` +
+        compareAthletes.map(a=>{
+          const snap = computeSnapshot(a.pinny);
+          const combineList = snap && snap.combine.length ? snap.combine.slice(0,6).join('<br>') : 'No combine data logged';
+          return `
+        <div class="comparecol">
+          <div class="comparename"><span>#${a.pinny} ${a.name}</span></div>
+          <div class="comparestat">Skill Avg <b>${fmtMetric(a.metrics.skillAvg)}</b></div>
+          <div class="comparestat">Compete (+/-) <b>${a.metrics.compete>0?'+':''}${a.metrics.compete}</b></div>
+          <div class="comparestat">TCS Avg <b>${fmtMetric(a.metrics.tcsAvg)}</b></div>
+          <div class="comparestat">Reps Logged <b>${a.metrics.reps}</b></div>
+          <div class="comparepos">${a.year||''} · ${a.pos||''} · ${a.paid?'Paid':'Unpaid'}</div>
+          <div class="comparestat" style="margin-top:6px"><b>Combine</b><br><span style="font-size:11px">${combineList}</span></div>
+          <div class="decidebtns" style="margin-top:8px">${decideButtons(a.pinny, a.status)}</div>
+          <textarea class="comparenote" data-note="${a.pinny}" placeholder="Why? (optional note for the cut meeting)">${a.note||''}</textarea>
+        </div>`;
+        }).join('') +
+      `</div>
+      <div class="rowrow" style="margin-top:12px"><button class="ghost" id="clearCompareBtn">Clear Compare</button></div>`;
+  } else {
+    html += `<p class="empty">No athletes selected yet — search above, or tick the checkbox on any row below.</p>`;
+  }
+  html += `</div>`;
+
+  html += `<div class="card">
+    <div class="filterbar">
+      <input id="selectionSearch" placeholder="Search by name, pinnie #, or position" value="${state.selectionSearch}">
+      <select id="selectionStatusFilter">
+        <option value="all" ${state.selectionStatusFilter==='all'?'selected':''}>All statuses</option>
+        <option value="undecided" ${state.selectionStatusFilter==='undecided'?'selected':''}>Undecided only</option>
+        <option value="team1" ${state.selectionStatusFilter==='team1'?'selected':''}>Team 1</option>
+        <option value="team2" ${state.selectionStatusFilter==='team2'?'selected':''}>Team 2</option>
+        <option value="reserve" ${state.selectionStatusFilter==='reserve'?'selected':''}>Reserve</option>
+        <option value="release" ${state.selectionStatusFilter==='release'?'selected':''}>Release</option>
+      </select>
+      <select id="selectionPositionFilter">
+        <option value="all" ${state.selectionPositionFilter==='all'?'selected':''}>All positions</option>` +
+        distinctPositions().map(p=>`<option value="${p}" ${state.selectionPositionFilter===p?'selected':''}>${p}</option>`).join('') +
+      `</select>
+      <select id="selectionSort">
+        <option value="name" ${state.selectionSort==='name'?'selected':''}>Sort: Name</option>
+        <option value="position" ${state.selectionSort==='position'?'selected':''}>Sort: Position</option>
+        <option value="skill" ${state.selectionSort==='skill'?'selected':''}>Sort: Skill Avg</option>
+        <option value="compete" ${state.selectionSort==='compete'?'selected':''}>Sort: Compete</option>
+        <option value="tcs" ${state.selectionSort==='tcs'?'selected':''}>Sort: TCS Avg</option>
+      </select>
+    </div>
+    <div id="selectionTableWrap">${selectionTableHtml(list)}</div>
+  <div class="exportbar"><button id="exportDecisionsBtn">Export Decisions CSV</button></div>
+  </div>`;
+
+  main.innerHTML = html;
+
+  document.getElementById('selectionSearch').oninput = (e)=>{ state.selectionSearch = e.target.value; renderSelectionTable(); };
+  document.getElementById('selectionStatusFilter').onchange = (e)=>{ state.selectionStatusFilter = e.target.value; renderSelectionMain(); };
+  document.getElementById('selectionPositionFilter').onchange = (e)=>{ state.selectionPositionFilter = e.target.value; renderSelectionMain(); };
+  document.getElementById('selectionSort').onchange = (e)=>{ state.selectionSort = e.target.value; renderSelectionMain(); };
+  document.getElementById('exportDecisionsBtn').onclick = exportDecisionsCsv;
+  document.getElementById('compareQuery').oninput = (e)=>{ state.compareQuery = e.target.value; };
+  document.querySelectorAll('[data-pickmatch]').forEach(b=>{
+    b.onclick = ()=> selectCompareMatch(parseInt(b.dataset.pickmatch));
+  });
+  document.getElementById('addCompareBtn').onclick = ()=> addToCompareByQuery(document.getElementById('compareQuery').value);
+  document.querySelectorAll('[data-note]').forEach(ta=>{
+    ta.onchange = ()=> setDecisionNote(parseInt(ta.dataset.note), ta.value);
+  });
+  const clearCompareBtn = document.getElementById('clearCompareBtn');
+  if(clearCompareBtn) clearCompareBtn.onclick = ()=>{ state.compareList=[]; renderSelectionMain(); };
+  document.querySelectorAll('[data-uncompare]').forEach(b=>{
+    b.onclick = ()=> toggleCompare(parseInt(b.dataset.uncompare));
+  });
+  wireSelectionTableRows();
+}
+
+function renderAll(){
+  const stationTabsEl = document.getElementById('stationTabs');
+  const idRowEl = document.getElementById('idRow');
+  if(state.viewMode==='coach'){
+    stationTabsEl.style.display='none';
+    idRowEl.style.display='none';
+    document.getElementById('sessionTabs').innerHTML='';
+    renderCoachDashboard();
+    return;
+  }
+  if(state.viewMode==='checkin'){
+    stationTabsEl.style.display='none';
+    idRowEl.style.display='none';
+    renderSessionTabs();
+    renderCheckinMain();
+    return;
+  }
+  if(state.viewMode==='selection'){
+    stationTabsEl.style.display='none';
+    idRowEl.style.display='none';
+    document.getElementById('sessionTabs').innerHTML='';
+    renderSelectionMain();
+    return;
+  }
+  stationTabsEl.style.display='';
+  idRowEl.style.display='';
+  renderSessionTabs();
+  renderStationTabs();
+  if(state.mode==='station') renderStationForm(); else renderScrimmage();
+  renderLogCard();
+}
+
+function setActiveMode(mode){
+  state.viewMode = mode;
+  ['modeEvaluator','modeCoach','modeCheckin','modeSelection'].forEach(id=>{
+    document.getElementById(id).classList.toggle('active', id === 'mode'+mode.charAt(0).toUpperCase()+mode.slice(1));
+  });
+  renderAll();
+}
+document.getElementById('modeEvaluator').onclick = ()=> setActiveMode('evaluator');
+document.getElementById('modeCoach').onclick = ()=> setActiveMode('coach');
+document.getElementById('modeCheckin').onclick = ()=> setActiveMode('checkin');
+document.getElementById('modeSelection').onclick = ()=> setActiveMode('selection');
+
+/* ---------------------------------------------------------------
+   LIVE AUTO-SYNC
+   Pulls the shared backend on an interval so every evaluator's
+   tablet reflects everyone else's entries without a manual tap.
+   Only the log table is touched — never the in-progress form —
+   so it never interrupts someone mid-entry.
+---------------------------------------------------------------- */
+let syncing = false;
+async function backgroundSync(){
+  if(syncing) return;
+  syncing = true;
+  try{
+    const res = await cloudGet(STORAGE_KEY);
+    const fresh = res && res.value ? JSON.parse(res.value) : [];
+    // MERGE, never overwrite: a poll can resolve with a snapshot older than
+    // what's already sitting locally (e.g. mid-simulation, or another device's
+    // save still in flight). Blindly replacing local entries with a stale
+    // fetch silently discards not-yet-synced work. Union by id instead.
+    const map = new Map();
+    fresh.forEach(e=>{ if(e && e.id) map.set(e.id, e); });
+    entries.forEach(e=>{ if(e && e.id) map.set(e.id, e); });
+    const merged = Array.from(map.values()).sort((a,b)=> new Date(a.ts) - new Date(b.ts));
+    const changed = merged.length !== entries.length;
+    const localHadExtra = merged.length !== fresh.length;
+    entries = merged;
+    if(changed){
+      if(state.viewMode==='coach'){ renderCoachLog(); renderSnapshot(); renderLiveTotals(); }
+      else if(state.viewMode==='evaluator'){ renderLog(); }
+    }
+    if(localHadExtra){
+      // the backend was missing entries we already have locally — push the
+      // merged, complete set back up so it catches up instead of losing them.
+      await saveEntries();
+    }
+    updateSyncStatus('live');
+  }catch(e){
+    updateSyncStatus('offline');
+  }
+  syncing = false;
+}
+function updateSyncStatus(state){
+  lastSyncOk = (state==='live');
+  const el = document.getElementById('syncStatus');
+  if(!el) return;
+  el.textContent = state==='live' ? '● Synced' : '● Sync paused — check connection';
+  el.style.color = state==='live' ? '#BFE8D2' : '#F3C6C6';
+}
+setInterval(backgroundSync, 8000);
+
+document.getElementById('dateTag').textContent = new Date().toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+loadEvaluatorName();
+Promise.all([loadEntries(), loadRosterFromCloud(), loadDecisionsFromCloud()]).then(renderAll);
+
+// Warn before closing/refreshing if a save is still in flight, or the last
+// sync attempt failed — the one window where something could be sitting
+// only in this tab's memory and nowhere else yet.
+window.addEventListener('beforeunload', function(e){
+  if(pendingSaves>0 || !lastSyncOk){
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+});
+</script>
+</body>
+</html>

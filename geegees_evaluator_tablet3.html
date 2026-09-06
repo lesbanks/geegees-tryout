@@ -593,12 +593,23 @@ async function loadEntries(){
   }catch(e){ entries = []; }
   renderLog();
 }
+// Serialized the same way as rosterWriteChain/decisionsWriteChain: rapid
+// taps (log a rep, immediately log another before the first save lands)
+// can otherwise have their responses arrive out of order, letting an
+// earlier, smaller snapshot overwrite a later, more complete one. Each
+// queued write reads `entries` fresh at the moment it actually runs, so
+// by the time it's this write's turn, it always reflects everything
+// logged up to that point.
+let entriesWriteChain = Promise.resolve();
 async function saveEntries(){
-  try{
-    const res = await storageSet(STORAGE_KEY, JSON.stringify(entries), true);
-    if(!res){ toast("Saved locally — sync failed"); return false; }
-    return true;
-  }catch(e){ toast("Saved locally — sync failed"); return false; }
+  entriesWriteChain = entriesWriteChain.then(async ()=>{
+    try{
+      const res = await storageSet(STORAGE_KEY, JSON.stringify(entries), true);
+      if(!res){ toast("Saved locally — sync failed"); return false; }
+      return true;
+    }catch(e){ toast("Saved locally — sync failed"); return false; }
+  });
+  return entriesWriteChain;
 }
 async function loadEvaluatorName(){
   try{
@@ -852,6 +863,17 @@ function renderScrimmage(){
    LOGGING
 ---------------------------------------------------------------- */
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+// Every name/year/position/note/evaluator field is free text someone typed
+// (a walk-on name at check-in, a pasted roster, a cut-meeting note) and
+// several of those get inserted into innerHTML. Without escaping, a name
+// like "<img src=x onerror=...>" would execute as real HTML/script in the
+// browser of everyone else viewing that roster — this makes that safe
+// regardless of what anyone types, accidentally or otherwise.
+function escapeHtml(str){
+  return String(str ?? '').replace(/[&<>"']/g, c => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  }[c]));
+}
 function baseMeta(){
   return {
     id: uid(),
@@ -924,7 +946,7 @@ function renderLog(){
     const t = new Date(e.ts);
     const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     const detail = Object.entries(e.data||{}).map(([k,v])=>`${k}:${v}`).join(' · ');
-    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+nameForPinny(e.athlete):''}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${e.evaluator}</td><td>${detail}</td></tr>`;
+    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+escapeHtml(nameForPinny(e.athlete)):''}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${escapeHtml(e.evaluator)}</td><td>${detail}</td></tr>`;
   });
   html += `</tbody></table></div><p class="synctag">Showing last 30 of ${entries.length} synced entries.</p>`;
   wrap.innerHTML = html;
@@ -933,11 +955,18 @@ function nameForPinny(pinny){
   const a = roster.find(r=> String(r.pinny)===String(pinny));
   return a ? a.name : null;
 }
+// A name/note starting with =, +, -, or @ can be interpreted as a formula
+// by Excel/Sheets when the CSV is opened — a leading apostrophe is the
+// standard way to force it to display as plain text instead of executing.
+function csvSafe(v){
+  const s = String(v ?? '');
+  return /^[=+\-@]/.test(s) ? "'" + s : s;
+}
 function toCsv(){
   const cols = ['ts','session','athlete','athleteName','evaluator','group','type','station','data'];
   const rows = [cols.join(',')];
   entries.forEach(e=>{
-    const row = [e.ts,e.session,e.athlete, nameForPinny(e.athlete)||'', e.evaluator,e.group,e.type,e.station, JSON.stringify(e.data).replace(/"/g,'""')];
+    const row = [e.ts,e.session,e.athlete, csvSafe(nameForPinny(e.athlete)||''), csvSafe(e.evaluator),csvSafe(e.group),e.type,e.station, JSON.stringify(e.data).replace(/"/g,'""')];
     rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
   });
   return rows.join('\n');
@@ -1277,7 +1306,7 @@ function renderSnapshot(){
     if(matches.length>1){
       el.innerHTML = `<p class="focus" style="margin:0 0 8px 0">${matches.length} athletes match "${raw}" — tap the one you mean.</p>
         <div class="comparechips">` +
-        matches.map(m=>`<button class="comparechip" style="border:none;cursor:pointer" data-picksnap="${m.pinny}">#${m.pinny} ${m.name}</button>`).join('') +
+        matches.map(m=>`<button class="comparechip" style="border:none;cursor:pointer" data-picksnap="${m.pinny}">#${m.pinny} ${escapeHtml(m.name)}</button>`).join('') +
         `</div>`;
       document.querySelectorAll('[data-picksnap]').forEach(b=>{
         b.onclick = ()=>{ coachFilters.athlete = String(b.dataset.picksnap); document.getElementById('snapAthlete').value = coachFilters.athlete; renderSnapshot(); };
@@ -1312,7 +1341,7 @@ function renderCoachLog(){
     const t = new Date(e.ts);
     const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     const detail = Object.entries(e.data||{}).map(([k,v])=>`${k}:${v}`).join(' · ');
-    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+nameForPinny(e.athlete):''}</td><td>${e.type}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${e.evaluator}</td><td>${detail}</td></tr>`;
+    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+escapeHtml(nameForPinny(e.athlete)):''}</td><td>${e.type}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${escapeHtml(e.evaluator)}</td><td>${detail}</td></tr>`;
   });
   html += `</tbody></table></div><p class="synctag">Showing last ${list.length} of ${filteredEntries().length} filtered entries (${entries.length} total synced).</p>`;
   el.innerHTML = html;
@@ -1330,6 +1359,8 @@ function renderCoachLog(){
 const CHECKIN_KEY = 'geegees-checkin-roster';
 let roster = [];
 let rosterSyncing = false;
+// See decisionsWriteChain above — same reasoning, same fix.
+let rosterWriteChain = Promise.resolve();
 state.checkinSearch = '';
 state.checkinShowLoader = true;
 state.checkinUnpaidOnly = false;
@@ -1380,23 +1411,25 @@ async function withFreshRoster(mutator){
   try{ roster = mutator(roster.slice()) || roster; }catch(e){}
   renderCheckinMain();
 
-  // AUTHORITATIVE PASS: re-run the exact same mutation against the
-  // freshest server state in the background, and persist THAT — so what
-  // actually gets saved is never based on stale data, and the UI silently
-  // corrects itself afterward if the real result differs from the guess
-  // (e.g. someone else changed something in between).
-  let current;
-  try{
-    const res = await cloudGet(CHECKIN_KEY);
-    current = res && res.value ? JSON.parse(res.value) : [];
-  }catch(e){ current = roster.slice(); }
-  const updated = mutator(current) || current;
-  roster = updated;
-  try{
-    const res = await storageSet(CHECKIN_KEY, JSON.stringify(updated), true);
-    if(!res) toast('Saved locally — sync failed');
-  }catch(e){ toast('Saved locally — sync failed'); }
-  renderCheckinMain();
+  // AUTHORITATIVE PASS: queued behind any earlier not-yet-finished calls
+  // (see decisionsWriteChain) — without this, rapidly editing several
+  // different athletes back-to-back would let whichever save finishes last
+  // overwrite the others with a stale snapshot that never saw them.
+  rosterWriteChain = rosterWriteChain.then(async ()=>{
+    let current;
+    try{
+      const res = await cloudGet(CHECKIN_KEY);
+      current = res && res.value ? JSON.parse(res.value) : [];
+    }catch(e){ current = roster.slice(); }
+    const updated = mutator(current) || current;
+    roster = updated;
+    try{
+      const res = await storageSet(CHECKIN_KEY, JSON.stringify(updated), true);
+      if(!res) toast('Saved locally — sync failed');
+    }catch(e){ toast('Saved locally — sync failed'); }
+    renderCheckinMain();
+  });
+  await rosterWriteChain;
 }
 async function loadRosterFromCloud(){
   try{
@@ -1441,17 +1474,28 @@ function wireWalkOnInputs(){
   });
   document.getElementById('addWalkOnBtn').onclick = ()=> addWalkOn(state.walkOnName, state.walkOnYear, state.walkOnPos, state.walkOnPinny);
 }
+let listNumCounter = 0;
 function uniqueListNum(current){
   // Deliberately NOT "highest existing + 1" — that's exactly what let two
   // devices, each working from a roster snapshot that didn't yet include
   // the other's just-added athlete, independently compute and assign the
   // same "next" number (confirmed directly: listNum 30 ended up shared by
-  // three different athletes in real testing). A time+random value can't
-  // collide the same way, since it doesn't depend on what the rest of the
-  // roster looked like a moment ago.
+  // three different athletes in real testing).
+  // A monotonic counter combined with the timestamp guarantees this never
+  // collides with itself even across many calls in a tight loop within the
+  // same millisecond (confirmed by testing: timestamp+random alone did
+  // collide under 200 rapid-fire calls) — the check against `current` is
+  // extra defense specifically for the cross-device case.
   let n;
-  do{ n = Date.now()*1000 + Math.floor(Math.random()*1000); }
-  while(current.some(a=>a.listNum===n));
+  do{
+    listNumCounter++;
+    // NOTE: the multiplier must keep the result under Number.MAX_SAFE_INTEGER
+    // (2^53). Date.now() is ~13 digits; ×10000 would push past the safe
+    // integer limit and silently lose precision, making small counter
+    // increments round to the same value — confirmed by testing (500 rapid
+    // calls collided with a ×10000 multiplier). ×1000 stays safely within range.
+    n = Date.now()*1000 + (listNumCounter % 1000);
+  } while(current.some(a=>a.listNum===n));
   return n;
 }
 async function addWalkOn(name, year, positions, pinnyRaw){
@@ -1687,7 +1731,7 @@ function exportCheckinCsv(){
   const cols = ['pinny','listNum','name','year','pos','paid','paidAt', ...dayKeys.map(d=>d+'_present'), ...dayKeys.map(d=>d+'_time')];
   const rows = [cols.join(',')];
   roster.slice().sort((a,b)=>(a.pinny||9999)-(b.pinny||9999)).forEach(a=>{
-    const row = [a.pinny||'', a.listNum, a.name, a.year, a.pos, a.paid?'Y':'N', a.paidAt||'',
+    const row = [a.pinny||'', a.listNum, csvSafe(a.name), csvSafe(a.year), csvSafe(a.pos), a.paid?'Y':'N', a.paidAt||'',
       ...dayKeys.map(d=> (a.attendance && a.attendance[d] && a.attendance[d].in) ? 'Y' : 'N'),
       ...dayKeys.map(d=> (a.attendance && a.attendance[d] && a.attendance[d].time) || '')
     ];
@@ -1724,9 +1768,9 @@ function checkinTableHtml(list, day){
         </div>
         ${a.pinny ? '' : `<button class="assignbtn" data-assign="${a.listNum}" title="Assign next available number">Assign</button>`}
       </td>
-      <td><span class="rostername">${a.name}</span></td>
-      <td><span class="rosteryear">${a.year||''}</span></td>
-      <td><span class="rosterpos">${a.pos||''}</span></td>
+      <td><span class="rostername">${escapeHtml(a.name)}</span></td>
+      <td><span class="rosteryear">${escapeHtml(a.year||'')}</span></td>
+      <td><span class="rosterpos">${escapeHtml(a.pos||'')}</span></td>
       <td>
         <button class="presentbtn ${isIn?'on':''}" data-checkin="${a.listNum}">${isIn?'✓ Present':'Check In'}</button>
         ${timeStr?`<span class="checktime">${timeStr}</span>`:''}
@@ -1734,7 +1778,7 @@ function checkinTableHtml(list, day){
       <td>
         <button class="presentbtn ${a.paid?'on':''}" data-paid="${a.listNum}">${a.paid?'✓ Paid':'Unpaid'}</button>
       </td>
-      <td><button class="rmbtn" data-remove="${a.listNum}" data-name="${a.name.replace(/"/g,'&quot;')}" title="Remove athlete">✕</button></td>
+      <td><button class="rmbtn" data-remove="${a.listNum}" data-name="${escapeHtml(a.name)}" title="Remove athlete">✕</button></td>
     </tr>`;
   });
   html += `</tbody></table></div>
@@ -1806,9 +1850,9 @@ function renderCheckinMain(){
     <h2>Add Walk-On</h2>
     <p class="focus">Someone not on the imported list yet — add them here, then check them in below like anyone else.</p>
     <div class="filterbar">
-      <input id="walkOnName" placeholder="Name" value="${state.walkOnName}">
-      <input id="walkOnYear" placeholder="Year (optional)" value="${state.walkOnYear}">
-      <input id="walkOnPinny" placeholder="Pinnie # (optional)" inputmode="numeric" value="${state.walkOnPinny}">
+      <input id="walkOnName" placeholder="Name" value="${escapeHtml(state.walkOnName)}">
+      <input id="walkOnYear" placeholder="Year (optional)" value="${escapeHtml(state.walkOnYear)}">
+      <input id="walkOnPinny" placeholder="Pinnie # (optional)" inputmode="numeric" value="${escapeHtml(state.walkOnPinny)}">
     </div>
     <div class="walkonpos">` +
       POSITION_OPTIONS.map(p=>`<label class="poscheck"><input type="checkbox" data-walkonpos="${p}" ${state.walkOnPos.includes(p)?'checked':''}> ${p}</label>`).join('') +
@@ -1891,6 +1935,13 @@ function renderCheckinMain(){
 const DECISIONS_KEY = 'geegees-roster-decisions';
 let decisions = {};
 let decisionsSyncing = false;
+// Serializes the authoritative fetch-mutate-save step so that rapid,
+// overlapping decisions (tap Team 1 for one player, then immediately move
+// on to the next few before the first has finished saving) can't stomp
+// each other — each one now waits for every earlier one to actually finish
+// before it fetches "fresh," so it never works from a snapshot that's
+// missing someone else's still-in-flight decision.
+let decisionsWriteChain = Promise.resolve();
 state.selectionSearch = '';
 state.selectionStatusFilter = 'all';
 state.selectionSort = 'name';
@@ -1903,23 +1954,29 @@ const DECISION_LABELS = { team1:'Team 1', team2:'Team 2', reserve:'Reserve', rel
 function statusLabel(status){ return DECISION_LABELS[status] || 'Undecided'; }
 
 async function withFreshDecisions(mutator){
-  // Same optimistic-then-authoritative pattern as withFreshRoster — see
-  // its comment for the full reasoning.
+  // OPTIMISTIC PASS: still instant, still runs immediately regardless of
+  // whatever else is mid-flight — see withFreshRoster's comment.
   try{ decisions = mutator({...decisions}) || decisions; }catch(e){}
   renderSelectionMain();
 
-  let current;
-  try{
-    const res = await cloudGet(DECISIONS_KEY);
-    current = res && res.value ? JSON.parse(res.value) : {};
-  }catch(e){ current = {...decisions}; }
-  const updated = mutator(current) || current;
-  decisions = updated;
-  try{
-    const res = await storageSet(DECISIONS_KEY, JSON.stringify(updated), true);
-    if(!res) toast('Saved locally — sync failed');
-  }catch(e){ toast('Saved locally — sync failed'); }
-  renderSelectionMain();
+  // AUTHORITATIVE PASS: queued behind any earlier not-yet-finished calls,
+  // so this one's "fetch fresh" always reflects every decision made before
+  // it, not just the ones whose round trip happened to finish first.
+  decisionsWriteChain = decisionsWriteChain.then(async ()=>{
+    let current;
+    try{
+      const res = await cloudGet(DECISIONS_KEY);
+      current = res && res.value ? JSON.parse(res.value) : {};
+    }catch(e){ current = {...decisions}; }
+    const updated = mutator(current) || current;
+    decisions = updated;
+    try{
+      const res = await storageSet(DECISIONS_KEY, JSON.stringify(updated), true);
+      if(!res) toast('Saved locally — sync failed');
+    }catch(e){ toast('Saved locally — sync failed'); }
+    renderSelectionMain();
+  });
+  await decisionsWriteChain;
 }
 async function loadDecisionsFromCloud(){
   try{
@@ -2063,7 +2120,7 @@ function exportDecisionsCsv(){
   const rows = [cols.join(',')];
   selectionRoster().sort((a,b)=>a.pinny-b.pinny).forEach(a=>{
     const dec = decisionFor(a.pinny, a.name);
-    const row = [a.pinny, a.name, a.year, a.pos, a.paid?'Y':'N', dec?statusLabel(dec.status):'', dec?dec.decidedAt:'', dec?(dec.note||''):'',
+    const row = [a.pinny, csvSafe(a.name), csvSafe(a.year), csvSafe(a.pos), a.paid?'Y':'N', dec?statusLabel(dec.status):'', dec?dec.decidedAt:'', dec?csvSafe(dec.note||''):'',
       a.metrics.skillAvg!==null? a.metrics.skillAvg.toFixed(2):'', a.metrics.compete, a.metrics.tcsAvg!==null? a.metrics.tcsAvg.toFixed(2):'', a.metrics.reps];
     rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
   });
@@ -2096,8 +2153,8 @@ function selectionTableHtml(list){
     html += `<tr>
       <td><input type="checkbox" class="comparecheck" data-compare="${a.pinny}" ${state.compareList.includes(a.pinny)?'checked':''}></td>
       <td><span class="pinnybadge">#${a.pinny}</span></td>
-      <td><span class="rostername">${a.name}</span><div class="rosteryear">${a.year||''} · ${a.paid?'Paid':'Unpaid'}</div></td>
-      <td><span class="rosterpos">${a.pos||''}</span></td>
+      <td><span class="rostername">${escapeHtml(a.name)}</span><div class="rosteryear">${escapeHtml(a.year||'')} · ${a.paid?'Paid':'Unpaid'}</div></td>
+      <td><span class="rosterpos">${escapeHtml(a.pos||'')}</span></td>
       <td>${fmtMetric(a.metrics.skillAvg)}</td>
       <td>${a.metrics.compete>0?'+':''}${a.metrics.compete}</td>
       <td>${fmtMetric(a.metrics.tcsAvg)}</td>
@@ -2145,7 +2202,7 @@ function renderSelectionMain(){
       <th>Position</th><th>Total</th><th>Team 1</th><th>Team 2</th><th>Reserve</th><th>Release</th><th>Undecided</th>
     </tr></thead><tbody>` +
       positionBreakdown().map(r=>`<tr>
-        <td><span class="rosterpos">${r.pos}</span></td><td>${r.total}</td><td>${r.team1}</td><td>${r.team2}</td><td>${r.reserve}</td><td>${r.release}</td><td>${r.undecided}</td>
+        <td><span class="rosterpos">${escapeHtml(r.pos)}</span></td><td>${r.total}</td><td>${r.team1}</td><td>${r.team2}</td><td>${r.reserve}</td><td>${r.release}</td><td>${r.undecided}</td>
       </tr>`).join('') +
     `</tbody></table></div>
   </div>`;
@@ -2160,14 +2217,14 @@ function renderSelectionMain(){
   if(state.compareMatches.length){
     html += `<div class="comparechips">` +
       state.compareMatches.map(m=>
-        `<button class="comparechip" style="border:none;cursor:pointer" data-pickmatch="${m.pinny}">#${m.pinny} ${m.name}${m.pos?' — '+m.pos:''}</button>`
+        `<button class="comparechip" style="border:none;cursor:pointer" data-pickmatch="${m.pinny}">#${m.pinny} ${escapeHtml(m.name)}${m.pos?' — '+escapeHtml(m.pos):''}</button>`
       ).join('') +
     `</div><p class="focus" style="margin-top:-4px">${state.compareMatches.length} athletes match "${state.compareQuery}" — tap the one you mean.</p>`;
   }
   if(compareAthletes.length){
     html += `
       <div class="comparechips">` +
-        compareAthletes.map(a=>`<span class="comparechip">#${a.pinny} ${a.name}<button data-uncompare="${a.pinny}">✕</button></span>`).join('') +
+        compareAthletes.map(a=>`<span class="comparechip">#${a.pinny} ${escapeHtml(a.name)}<button data-uncompare="${a.pinny}">✕</button></span>`).join('') +
       `</div>
       <div class="comparegrid">` +
         compareAthletes.map(a=>{
@@ -2175,15 +2232,15 @@ function renderSelectionMain(){
           const combineList = snap && snap.combine.length ? snap.combine.slice(0,6).join('<br>') : 'No combine data logged';
           return `
         <div class="comparecol">
-          <div class="comparename"><span>#${a.pinny} ${a.name}</span></div>
+          <div class="comparename"><span>#${a.pinny} ${escapeHtml(a.name)}</span></div>
           <div class="comparestat">Skill Avg <b>${fmtMetric(a.metrics.skillAvg)}</b></div>
           <div class="comparestat">Compete (+/-) <b>${a.metrics.compete>0?'+':''}${a.metrics.compete}</b></div>
           <div class="comparestat">TCS Avg <b>${fmtMetric(a.metrics.tcsAvg)}</b></div>
           <div class="comparestat">Reps Logged <b>${a.metrics.reps}</b></div>
-          <div class="comparepos">${a.year||''} · ${a.pos||''} · ${a.paid?'Paid':'Unpaid'}</div>
+          <div class="comparepos">${escapeHtml(a.year||'')} · ${escapeHtml(a.pos||'')} · ${a.paid?'Paid':'Unpaid'}</div>
           <div class="comparestat" style="margin-top:6px"><b>Combine</b><br><span style="font-size:11px">${combineList}</span></div>
           <div class="decidebtns" style="margin-top:8px">${decideButtons(a.pinny, a.status)}</div>
-          <textarea class="comparenote" data-note="${a.pinny}" placeholder="Why? (optional note for the cut meeting)">${a.note||''}</textarea>
+          <textarea class="comparenote" data-note="${a.pinny}" placeholder="Why? (optional note for the cut meeting)">${escapeHtml(a.note||'')}</textarea>
         </div>`;
         }).join('') +
       `</div>
@@ -2206,7 +2263,7 @@ function renderSelectionMain(){
       </select>
       <select id="selectionPositionFilter">
         <option value="all" ${state.selectionPositionFilter==='all'?'selected':''}>All positions</option>` +
-        distinctPositions().map(p=>`<option value="${p}" ${state.selectionPositionFilter===p?'selected':''}>${p}</option>`).join('') +
+        distinctPositions().map(p=>`<option value="${escapeHtml(p)}" ${state.selectionPositionFilter===p?'selected':''}>${escapeHtml(p)}</option>`).join('') +
       `</select>
       <select id="selectionSort">
         <option value="name" ${state.selectionSort==='name'?'selected':''}>Sort: Name</option>

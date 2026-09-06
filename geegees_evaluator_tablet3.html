@@ -586,11 +586,25 @@ function customConfirm(message){
 /* ---------------------------------------------------------------
    PERSISTENCE (shared across evaluator tablets)
 ---------------------------------------------------------------- */
+function mergeEntriesById(local, fresh){
+  const map = new Map();
+  fresh.forEach(e=>{ if(e && e.id) map.set(e.id, e); });
+  local.forEach(e=>{ if(e && e.id) map.set(e.id, e); });
+  return Array.from(map.values()).sort((a,b)=> new Date(a.ts) - new Date(b.ts));
+}
 async function loadEntries(){
   try{
     const res = await cloudGet(STORAGE_KEY);
-    entries = res && res.value ? JSON.parse(res.value) : [];
-  }catch(e){ entries = []; }
+    const fresh = res && res.value ? JSON.parse(res.value) : [];
+    // MERGE, never blindly replace — this is called both at startup (where
+    // it's harmless either way, since local is empty) and from the
+    // "Refresh now" button, which is user-triggered and could easily land
+    // while a save from a rep logged moments ago is still in flight.
+    // Confirmed directly: refreshing while a save was pending wiped that
+    // rep both locally AND in the backend (the still-queued save
+    // re-serializes whatever `entries` is at the moment it actually runs).
+    entries = mergeEntriesById(entries, fresh);
+  }catch(e){}
   renderLog();
 }
 // Serialized the same way as rosterWriteChain/decisionsWriteChain: rapid
@@ -1422,9 +1436,11 @@ async function withFreshRoster(mutator){
       current = res && res.value ? JSON.parse(res.value) : [];
     }catch(e){ current = roster.slice(); }
     const updated = mutator(current) || current;
-    roster = updated;
+    // MERGE, don't blindly overwrite — see withFreshDecisions for the full
+    // reasoning. Same fix, same underlying pattern.
+    roster = mergeRoster(roster, updated);
     try{
-      const res = await storageSet(CHECKIN_KEY, JSON.stringify(updated), true);
+      const res = await storageSet(CHECKIN_KEY, JSON.stringify(roster), true);
       if(!res) toast('Saved locally — sync failed');
     }catch(e){ toast('Saved locally — sync failed'); }
     renderCheckinMain();
@@ -1992,9 +2008,18 @@ async function withFreshDecisions(mutator){
       current = res && res.value ? JSON.parse(res.value) : {};
     }catch(e){ current = {...decisions}; }
     const updated = mutator(current) || current;
-    decisions = updated;
+    // MERGE, don't blindly overwrite: `updated` only reflects THIS action's
+    // effect on top of a fetch that predates other still-in-flight clicks —
+    // it has no idea about a different decision someone else made a moment
+    // ago that hasn't reached ITS OWN authoritative turn yet. A blind
+    // assignment here would erase that pending click until its own turn
+    // came up seconds later. Confirmed directly: clicking three players in
+    // quick succession showed the 2nd and 3rd as unselected for over a
+    // second, purely from this pattern, even though nothing was ever lost
+    // from the eventual saved result.
+    decisions = mergeDecisions(decisions, updated);
     try{
-      const res = await storageSet(DECISIONS_KEY, JSON.stringify(updated), true);
+      const res = await storageSet(DECISIONS_KEY, JSON.stringify(decisions), true);
       if(!res) toast('Saved locally — sync failed');
     }catch(e){ toast('Saved locally — sync failed'); }
     renderSelectionMain();
@@ -2406,10 +2431,7 @@ async function backgroundSync(){
     // what's already sitting locally (e.g. mid-simulation, or another device's
     // save still in flight). Blindly replacing local entries with a stale
     // fetch silently discards not-yet-synced work. Union by id instead.
-    const map = new Map();
-    fresh.forEach(e=>{ if(e && e.id) map.set(e.id, e); });
-    entries.forEach(e=>{ if(e && e.id) map.set(e.id, e); });
-    const merged = Array.from(map.values()).sort((a,b)=> new Date(a.ts) - new Date(b.ts));
+    const merged = mergeEntriesById(entries, fresh);
     const changed = merged.length !== entries.length;
     const localHadExtra = merged.length !== fresh.length;
     entries = merged;

@@ -1437,14 +1437,37 @@ async function loadRosterFromCloud(){
     roster = res && res.value ? JSON.parse(res.value) : [];
   }catch(e){ roster = []; }
 }
+// Same reasoning as mergeDecisions — never blindly overwrite. Roster
+// records don't have one single "last modified" field, so this derives
+// one from whichever sub-fields actually carry a timestamp (pinnie
+// assignment, payment, check-in time) and keeps whichever side touched
+// that athlete more recently, per athlete.
+function athleteLastModified(a){
+  const times = [a.pinnyAssignedAt, a.paidAt].filter(Boolean);
+  if(a.attendance) Object.values(a.attendance).forEach(rec=>{ if(rec && rec.time) times.push(rec.time); });
+  if(!times.length) return 0;
+  return Math.max(...times.map(t=>new Date(t).getTime()));
+}
+function mergeRoster(local, fresh){
+  const byListNum = new Map();
+  fresh.forEach(a=> byListNum.set(a.listNum, a));
+  local.forEach(a=>{
+    const f = byListNum.get(a.listNum);
+    if(!f){ byListNum.set(a.listNum, a); return; }
+    const lt = athleteLastModified(a), ft = athleteLastModified(f);
+    byListNum.set(a.listNum, lt >= ft ? a : f);
+  });
+  return Array.from(byListNum.values());
+}
 async function backgroundPollRoster(){
   if(rosterSyncing) return; rosterSyncing = true;
   try{
     const res = await cloudGet(CHECKIN_KEY);
-    const fresh = res && res.value ? res.value : '[]';
-    const changed = fresh !== JSON.stringify(roster);
+    const fresh = res && res.value ? JSON.parse(res.value) : [];
+    const merged = mergeRoster(roster, fresh);
+    const changed = JSON.stringify(merged) !== JSON.stringify(roster);
     if(changed){
-      roster = JSON.parse(fresh);
+      roster = merged;
       if(state.viewMode==='checkin'){
         // Prefer the lightweight table-only refresh so it never disturbs
         // whatever's focused (e.g. mid-typing in the search box). Only
@@ -1984,14 +2007,35 @@ async function loadDecisionsFromCloud(){
     decisions = res && res.value ? JSON.parse(res.value) : {};
   }catch(e){ decisions = {}; }
 }
+// Merges by pinny, never blindly overwrites: for each athlete present on
+// either side, keeps whichever decision is actually more recent
+// (decidedAt). Without this, a decision still mid-flight through the
+// write queue (not yet actually saved) could get silently wiped by this
+// poll fetching an older snapshot — and critically, nothing would ever
+// re-correct it afterward, since the poll doesn't know a save is pending.
+// Confirmed directly: assigning Team 1, then having a poll land before
+// that save completes, wiped it permanently even though the save itself
+// went on to succeed in the backend.
+function mergeDecisions(local, fresh){
+  const merged = {...fresh};
+  Object.keys(local).forEach(pinny=>{
+    const l = local[pinny], f = fresh[pinny];
+    if(!f){ merged[pinny] = l; return; }
+    const lt = l && l.decidedAt ? new Date(l.decidedAt).getTime() : 0;
+    const ft = f && f.decidedAt ? new Date(f.decidedAt).getTime() : 0;
+    merged[pinny] = lt >= ft ? l : f;
+  });
+  return merged;
+}
 async function backgroundPollDecisions(){
   if(decisionsSyncing) return; decisionsSyncing = true;
   try{
     const res = await cloudGet(DECISIONS_KEY);
-    const fresh = res && res.value ? res.value : '{}';
-    const changed = fresh !== JSON.stringify(decisions);
+    const fresh = res && res.value ? JSON.parse(res.value) : {};
+    const merged = mergeDecisions(decisions, fresh);
+    const changed = JSON.stringify(merged) !== JSON.stringify(decisions);
     if(changed){
-      decisions = JSON.parse(fresh);
+      decisions = merged;
       if(state.viewMode==='selection'){
         if(document.getElementById('selectionTableWrap')) renderSelectionTable();
         else renderSelectionMain();

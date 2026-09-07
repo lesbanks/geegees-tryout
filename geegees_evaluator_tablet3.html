@@ -173,6 +173,11 @@
     padding:6px 6px;border-bottom:2px solid var(--line);}
   table.roster td{padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:middle;}
   tr.present{background:#F2F8F4;}
+  tr.notified-absent{background:#FBF3E7;}
+  .statusbtns{display:flex;gap:5px;}
+  .nabtn{padding:9px 10px;border-radius:9px;border:1.5px solid var(--line);background:#fff;
+    font-weight:700;font-size:12.5px;cursor:pointer;color:var(--ink);}
+  .nabtn.on{background:var(--gold);border-color:#8A6A1E;color:#fff;}
   .pinnycell{display:flex;align-items:center;gap:5px;}
   .pinnybadge{display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:30px;
     border-radius:8px;background:var(--garnet);color:#fff;font-weight:800;font-size:14px;padding:0 6px;}
@@ -1607,23 +1612,45 @@ async function toggleCheckin(listNum){
     a.attendance = a.attendance || {};
     const wasIn = a.attendance[day] && a.attendance[day].in;
     if(!wasIn){
-      a.attendance[day] = { in:true, time:new Date().toISOString() };
+      // Checking someone in clears any Notified Absence for the day —
+      // the two are mutually exclusive.
+      a.attendance[day] = { in:true, na:false, time:new Date().toISOString() };
       if(!a.pinny){
         const used = new Set(current.filter(x=>x.pinny).map(x=>x.pinny));
         let n=1; while(used.has(n)) n++;
         a.pinny = n; a.pinnyAssignedAt = new Date().toISOString();
       }
     } else {
-      a.attendance[day] = { in:false, time:a.attendance[day].time };
+      a.attendance[day] = { in:false, na:false, time:a.attendance[day].time };
+    }
+    return current;
+  });
+}
+async function toggleNotifiedAbsence(listNum){
+  const day = SESSIONS[state.session].label;
+  await withFreshRoster(current=>{
+    const a = current.find(x=>x.listNum===listNum);
+    if(!a) return current;
+    a.attendance = a.attendance || {};
+    const wasNA = a.attendance[day] && a.attendance[day].na;
+    if(!wasNA){
+      // Marking NA clears Present for the day — mutually exclusive, and
+      // deliberately does NOT touch pinnie assignment (an athlete who's
+      // notified they can't make it today doesn't need one assigned yet).
+      a.attendance[day] = { in:false, na:true, time:new Date().toISOString() };
+    } else {
+      a.attendance[day] = { in:false, na:false, time:a.attendance[day].time };
     }
     return current;
   });
 }
 async function bulkCheckIn(){
   const day = SESSIONS[state.session].label;
-  const targets = filteredRoster().map(a=>a.listNum);
-  if(!targets.length){ toast('No athletes match the current filter'); return; }
-  if(!await customConfirm(`Check in ${targets.length} athlete(s) for ${day}? Anyone not already checked in will be marked present, and assigned a pinnie if they don't have one yet.`)) return;
+  const targets = filteredRoster()
+    .filter(a=> !(a.attendance && a.attendance[day] && a.attendance[day].na))
+    .map(a=>a.listNum);
+  if(!targets.length){ toast('No athletes match the current filter (or all visible are marked Notified Absent)'); return; }
+  if(!await customConfirm(`Check in ${targets.length} athlete(s) for ${day}? Anyone not already checked in will be marked present, and assigned a pinnie if they don't have one yet. Athletes marked Notified Absent are skipped.`)) return;
   let checkedCount = 0;
   await withFreshRoster(current=>{
     const used = new Set(current.filter(x=>x.pinny).map(x=>x.pinny));
@@ -1632,7 +1659,7 @@ async function bulkCheckIn(){
       if(!a) return;
       a.attendance = a.attendance || {};
       if(!(a.attendance[day] && a.attendance[day].in)){
-        a.attendance[day] = { in:true, time:new Date().toISOString() };
+        a.attendance[day] = { in:true, na:false, time:new Date().toISOString() };
         if(!a.pinny){
           let n=1; while(used.has(n)) n++;
           a.pinny = n; used.add(n); a.pinnyAssignedAt = new Date().toISOString();
@@ -1767,11 +1794,12 @@ async function resetRosterEverything(){
 }
 function exportCheckinCsv(){
   const dayKeys = Object.values(SESSIONS).map(s=>s.label);
-  const cols = ['pinny','listNum','name','year','pos','paid','paidAt', ...dayKeys.map(d=>d+'_present'), ...dayKeys.map(d=>d+'_time')];
+  const cols = ['pinny','listNum','name','year','pos','paid','paidAt', ...dayKeys.map(d=>d+'_present'), ...dayKeys.map(d=>d+'_notified_absent'), ...dayKeys.map(d=>d+'_time')];
   const rows = [cols.join(',')];
   roster.slice().sort((a,b)=>(a.pinny||9999)-(b.pinny||9999)).forEach(a=>{
     const row = [a.pinny||'', a.listNum, csvSafe(a.name), csvSafe(a.year), csvSafe(a.pos), a.paid?'Y':'N', a.paidAt||'',
       ...dayKeys.map(d=> (a.attendance && a.attendance[d] && a.attendance[d].in) ? 'Y' : 'N'),
+      ...dayKeys.map(d=> (a.attendance && a.attendance[d] && a.attendance[d].na) ? 'Y' : 'N'),
       ...dayKeys.map(d=> (a.attendance && a.attendance[d] && a.attendance[d].time) || '')
     ];
     rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
@@ -1797,8 +1825,9 @@ function checkinTableHtml(list, day){
   list.forEach(a=>{
     const rec = a.attendance && a.attendance[day];
     const isIn = rec && rec.in;
+    const isNA = rec && rec.na;
     const timeStr = rec && rec.time ? new Date(rec.time).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
-    html += `<tr class="${isIn?'present':''}">
+    html += `<tr class="${isIn?'present':''}${isNA?' notified-absent':''}">
       <td>
         <div class="numctl-sm">
           <button data-pinnydec="${a.listNum}" ${a.pinny?'':'disabled'}>−</button>
@@ -1811,7 +1840,10 @@ function checkinTableHtml(list, day){
       <td><span class="rosteryear">${escapeHtml(a.year||'')}</span></td>
       <td><span class="rosterpos">${escapeHtml(a.pos||'')}</span></td>
       <td>
-        <button class="presentbtn ${isIn?'on':''}" data-checkin="${a.listNum}">${isIn?'✓ Present':'Check In'}</button>
+        <div class="statusbtns">
+          <button class="presentbtn ${isIn?'on':''}" data-checkin="${a.listNum}">${isIn?'✓ Present':'Check In'}</button>
+          <button class="nabtn ${isNA?'on':''}" data-na="${a.listNum}" title="Notified Absence">NA</button>
+        </div>
         ${timeStr?`<span class="checktime">${timeStr}</span>`:''}
       </td>
       <td>
@@ -1827,6 +1859,9 @@ function checkinTableHtml(list, day){
 function wireCheckinTableRows(){
   document.querySelectorAll('[data-checkin]').forEach(b=>{
     b.onclick = ()=> toggleCheckin(parseInt(b.dataset.checkin));
+  });
+  document.querySelectorAll('[data-na]').forEach(b=>{
+    b.onclick = ()=> toggleNotifiedAbsence(parseInt(b.dataset.na));
   });
   document.querySelectorAll('[data-paid]').forEach(b=>{
     b.onclick = ()=> togglePaid(parseInt(b.dataset.paid));
@@ -1867,7 +1902,7 @@ function renderCheckinTable(){
   const wrap = document.getElementById('checkinTableWrap');
   if(wrap) wrap.innerHTML = checkinTableHtml(list, day);
   const bulkBtn = document.getElementById('bulkCheckinBtn');
-  if(bulkBtn) bulkBtn.textContent = `Check In All Visible (${list.length})`;
+  if(bulkBtn) bulkBtn.textContent = `Check In All Visible (${list.filter(a=>!(a.attendance && a.attendance[day] && a.attendance[day].na)).length})`;
   wireCheckinTableRows();
 }
 function renderCheckinMain(){
@@ -1877,6 +1912,7 @@ function renderCheckinMain(){
   const list = filteredRoster();
   const total = roster.length;
   const present = roster.filter(a=> a.attendance && a.attendance[day] && a.attendance[day].in).length;
+  const notifiedAbsent = roster.filter(a=> a.attendance && a.attendance[day] && a.attendance[day].na).length;
   const pinniesAssigned = roster.filter(a=>a.pinny).length;
   const paidCount = roster.filter(a=>a.paid).length;
 
@@ -1923,8 +1959,9 @@ function renderCheckinMain(){
 
   html += `<div class="card">
     <h2>${day} — ${dayName}</h2>
-    <div class="statgrid" style="grid-template-columns:repeat(4,1fr)">
+    <div class="statgrid" style="grid-template-columns:repeat(5,1fr)">
       <div class="statbox"><span class="n">${present}/${total}</span><span class="l">Checked In</span></div>
+      <div class="statbox"><span class="n">${notifiedAbsent}</span><span class="l">Notified Absent</span></div>
       <div class="statbox"><span class="n">${pinniesAssigned}</span><span class="l">Pinnies Assigned</span></div>
       <div class="statbox"><span class="n">${total-pinniesAssigned}</span><span class="l">Awaiting Pinnie</span></div>
       <div class="statbox"><span class="n">${paidCount}/${total}</span><span class="l">Paid</span></div>
@@ -1932,7 +1969,7 @@ function renderCheckinMain(){
     <div class="filterbar">
       <input id="checkinSearch" placeholder="Search by name, pinnie #, or list #" value="${state.checkinSearch}">
       <button id="unpaidToggleBtn" class="presentbtn ${state.checkinUnpaidOnly?'on':''}" style="flex:0 0 auto">${state.checkinUnpaidOnly?'✓ Unpaid only':'Show unpaid only'}</button>
-      <button id="bulkCheckinBtn" class="ghost" style="flex:0 0 auto">Check In All Visible (${list.length})</button>
+      <button id="bulkCheckinBtn" class="ghost" style="flex:0 0 auto">Check In All Visible (${list.filter(a=>!(a.attendance && a.attendance[day] && a.attendance[day].na)).length})</button>
     </div>
     <div id="checkinTableWrap">${checkinTableHtml(list, day)}</div>
     <div class="exportbar">

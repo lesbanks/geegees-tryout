@@ -1161,8 +1161,14 @@ async function runSimulationAllSessions(){
 }
 async function clearAllEntries(){
   if(!await customConfirm('This clears every synced entry for all evaluators (test or real). Use this to reset the log before the actual tryout. Continue?')) return;
+  syncing = true; // hold off the background poll so it can't merge the
+  // about-to-be-cleared backend data back in before our own save lands —
+  // confirmed directly: without this, a poll landing mid-clear resurrects
+  // the old entries into the local display even though the backend itself
+  // ends up correctly empty.
   entries = [];
   await saveEntries();
+  syncing = false;
   toast('Synced log cleared');
   renderCoachLog(); renderSnapshot(); renderLiveTotals();
 }
@@ -1777,7 +1783,8 @@ async function simulateRegistration(){
 }
 async function resetRosterEverything(){
   if(!await customConfirm('Reset ALL sign-in data? This permanently deletes the entire roster, every pinnie assignment, all check-in/payment history, and every Team Selection decision. This cannot be undone.')) return;
-  rosterSyncing = true; // hold off the background poll so it can't race this write
+  rosterSyncing = true; // hold off both background polls so neither can
+  decisionsSyncing = true; // merge the about-to-be-cleared data back in
   roster = [];
   decisions = {};
   state.checkinShowLoader = true;
@@ -1791,6 +1798,7 @@ async function resetRosterEverything(){
     toast('Reset did not sync — check connection and try again');
   }
   rosterSyncing = false;
+  decisionsSyncing = false;
 }
 function exportCheckinCsv(){
   const dayKeys = Object.values(SESSIONS).map(s=>s.label);

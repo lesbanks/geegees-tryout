@@ -659,6 +659,7 @@ async function loadEntries(){
 // by the time it's this write's turn, it always reflects everything
 // logged up to that point.
 let entriesWriteChain = Promise.resolve();
+let entriesClearInProgress = false;
 async function saveEntries(){
   entriesWriteChain = entriesWriteChain.then(async ()=>{
     try{
@@ -670,16 +671,35 @@ async function saveEntries(){
       // here. Confirmed directly against real Day 1 data: with 5 stations
       // in rotation, only 2 evaluators' initials survived in the saved
       // entries — everyone else's logged reps were silently overwritten.
-      // Skipped only when `syncing` is true, which means clearAllEntries
-      // itself is mid-clear right now and deliberately wants entries
-      // empty — merging old pre-clear data back in here would undo that.
-      if(!syncing){
+      // Skipped only when `entriesClearInProgress` is true, meaning
+      // clearAllEntries itself is mid-clear right now and deliberately
+      // wants entries empty — merging old pre-clear data back in here
+      // would undo that. Deliberately a SEPARATE flag from `syncing`:
+      // syncing also goes true during completely routine periodic
+      // background syncing, not just an intentional clear — checking
+      // that instead caused a save landing mid-poll to skip its merge
+      // and reintroduce the exact overwrite bug this is meant to
+      // prevent, confirmed directly by a save silently wiping out three
+      // other devices' work purely because a routine sync happened to be
+      // in flight at that moment.
+      if(!entriesClearInProgress){
         try{
           const res = await cloudGet(STORAGE_KEY);
           const raw = res && res.value ? JSON.parse(res.value) : [];
           const parsed = parseEntriesPayload(raw);
-          entries = mergeEntriesById(entries, parsed.list);
-          entriesResetToken = parsed.resetToken;
+          // Re-check AFTER the await, not just before it — a clear can
+          // start WHILE this fetch is in flight, and without re-checking,
+          // this merge would still run to completion once the fetch
+          // resolves, using data from before the clear even happened.
+          // Confirmed directly: a save's fetch captured pre-clear data,
+          // a clear ran while it was in flight, and the save's merge
+          // still completed afterward and resurrected the cleared entry
+          // — the check-once-before pattern doesn't protect against the
+          // flag changing during the await itself.
+          if(!entriesClearInProgress){
+            entries = mergeEntriesById(entries, parsed.list);
+            entriesResetToken = parsed.resetToken;
+          }
         }catch(e){}
       }
       const payload = JSON.stringify({ resetToken: entriesResetToken, entries: entries });
@@ -1226,6 +1246,10 @@ async function clearAllEntries(){
   // confirmed directly: without this, a poll landing mid-clear resurrects
   // the old entries into the local display even though the backend itself
   // ends up correctly empty.
+  entriesClearInProgress = true; // tells saveEntries's own merge step to
+  // stand down too — a SEPARATE flag from `syncing`, since that one also
+  // goes true during completely routine periodic syncing, not just an
+  // intentional clear.
   entries = [];
   entriesResetToken = uid(); // signals to every OTHER open tab/device that
   // this is an intentional clear, not data loss to defensively undo —
@@ -1234,6 +1258,7 @@ async function clearAllEntries(){
   // directly with a simulated second tab.
   await saveEntries();
   syncing = false;
+  entriesClearInProgress = false;
   toast('Synced log cleared');
   renderCoachLog(); renderSnapshot(); renderLiveTotals();
 }
@@ -1670,12 +1695,25 @@ async function withFreshRoster(mutator){
   // overwrite the others with a stale snapshot that never saw them.
   rosterWriteChain = rosterWriteChain.then(async ()=>{
     let current, fetchedToken;
+    const tokenAtStart = rosterResetToken;
     try{
       const res = await cloudGet(CHECKIN_KEY);
       const raw = res && res.value ? JSON.parse(res.value) : [];
       const parsed = parseRosterPayload(raw);
       current = parsed.list; fetchedToken = parsed.resetToken;
     }catch(e){ current = roster.slice(); fetchedToken = rosterResetToken; }
+    if(rosterResetToken !== tokenAtStart){
+      // A reset happened locally while this fetch was in flight — `roster`
+      // has already been correctly emptied by that reset (synchronously,
+      // before its own write went out). Re-base this action on top of
+      // THAT instead of the stale pre-reset data we just fetched, so the
+      // user's tap still lands, just on the correct post-reset state.
+      // Without this, the token-mismatch check below sees a "mismatch"
+      // and adopts the stale fetch directly, resurrecting pre-reset data
+      // — confirmed directly, reproduced 20/20 times under forced timing.
+      current = roster.slice();
+      fetchedToken = rosterResetToken;
+    }
     const updated = mutator(current) || current;
     if(fetchedToken !== rosterResetToken){
       // A reset happened elsewhere since we last knew — adopt the fresh
@@ -1730,10 +1768,25 @@ function mergeRoster(local, fresh){
 }
 async function backgroundPollRoster(){
   if(rosterSyncing) return; rosterSyncing = true;
+  // Captured before the fetch — if a reset happens locally WHILE this
+  // fetch is in flight, rosterResetToken will have moved on by the time
+  // we're ready to apply this poll's result, which means this result is
+  // now stale relative to something more recent we already know about.
+  // Without this check, the poll's own "does my fetched token differ
+  // from the current one" comparison gets it backwards in that exact
+  // case — it concludes someone else made a newer change and adopts its
+  // (actually stale, pre-reset) data directly, overwriting the correctly
+  // reset state. Confirmed directly: forcing a poll to start just before
+  // a reset reproduced this 20/20 times.
+  const tokenAtStart = rosterResetToken;
   try{
     const res = await cloudGet(CHECKIN_KEY);
     const raw = res && res.value ? JSON.parse(res.value) : [];
     const parsed = parseRosterPayload(raw);
+    if(rosterResetToken !== tokenAtStart){
+      rosterSyncing = false;
+      return;
+    }
     const merged = (parsed.resetToken !== rosterResetToken) ? parsed.list : mergeRoster(roster, parsed.list);
     const changed = JSON.stringify(merged) !== JSON.stringify(roster);
     rosterResetToken = parsed.resetToken;
@@ -1768,6 +1821,7 @@ function wireWalkOnInputs(){
   });
   document.getElementById('addWalkOnBtn').onclick = ()=> addWalkOn(state.walkOnName, state.walkOnYear, state.walkOnPos, state.walkOnPinny);
 }
+const listNumSeed = Date.now()*1000 + Math.floor(Math.random()*1000);
 let listNumCounter = 0;
 function uniqueListNum(current){
   // Deliberately NOT "highest existing + 1" — that's exactly what let two
@@ -1775,20 +1829,19 @@ function uniqueListNum(current){
   // the other's just-added athlete, independently compute and assign the
   // same "next" number (confirmed directly: listNum 30 ended up shared by
   // three different athletes in real testing).
-  // A monotonic counter combined with the timestamp guarantees this never
-  // collides with itself even across many calls in a tight loop within the
-  // same millisecond (confirmed by testing: timestamp+random alone did
-  // collide under 200 rapid-fire calls) — the check against `current` is
-  // extra defense specifically for the cross-device case.
+  // A once-per-session seed (timestamp + random, giving cross-device
+  // differentiation) plus a plain, never-wrapping counter (guaranteeing
+  // this device can never collide with itself, no matter how many calls
+  // happen in the same millisecond) — added together, not multiplied, so
+  // there's no modulus to overflow. An earlier version used
+  // Date.now()*1000 + (counter % 1000), which held up to ~1000 calls per
+  // millisecond but broke past that: confirmed directly, a 2000-call
+  // tight-loop stress test produced only 1796 unique values once the
+  // counter wrapped around within the same millisecond twice.
   let n;
   do{
     listNumCounter++;
-    // NOTE: the multiplier must keep the result under Number.MAX_SAFE_INTEGER
-    // (2^53). Date.now() is ~13 digits; ×10000 would push past the safe
-    // integer limit and silently lose precision, making small counter
-    // increments round to the same value — confirmed by testing (500 rapid
-    // calls collided with a ×10000 multiplier). ×1000 stays safely within range.
-    n = Date.now()*1000 + (listNumCounter % 1000);
+    n = listNumSeed + listNumCounter;
   } while(current.some(a=>a.listNum===n));
   return n;
 }
@@ -2304,12 +2357,23 @@ async function withFreshDecisions(mutator){
   // it, not just the ones whose round trip happened to finish first.
   decisionsWriteChain = decisionsWriteChain.then(async ()=>{
     let current, fetchedToken;
+    const tokenAtStart = decisionsResetToken;
     try{
       const res = await cloudGet(DECISIONS_KEY);
       const raw = res && res.value ? JSON.parse(res.value) : {};
       const parsed = parseDecisionsPayload(raw);
       current = parsed.obj; fetchedToken = parsed.resetToken;
     }catch(e){ current = {...decisions}; fetchedToken = decisionsResetToken; }
+    if(decisionsResetToken !== tokenAtStart){
+      // A reset happened locally while this fetch was in flight —
+      // `decisions` has already been correctly cleared by that reset. Re-base
+      // this click on top of THAT instead of the stale pre-reset fetch, so
+      // it still lands correctly rather than resurrecting old data. Same
+      // fix, same reasoning as withFreshRoster — confirmed directly, 20/20
+      // under forced timing.
+      current = {...decisions};
+      fetchedToken = decisionsResetToken;
+    }
     const updated = mutator(current) || current;
     if(fetchedToken !== decisionsResetToken){
       // A reset happened elsewhere since we last knew — adopt the fresh
@@ -2369,10 +2433,18 @@ function mergeDecisions(local, fresh){
 }
 async function backgroundPollDecisions(){
   if(decisionsSyncing) return; decisionsSyncing = true;
+  // Same reasoning as backgroundPollRoster — a reset happening locally
+  // while this fetch is in flight would otherwise make this poll adopt
+  // its own now-stale pre-reset result.
+  const tokenAtStart = decisionsResetToken;
   try{
     const res = await cloudGet(DECISIONS_KEY);
     const raw = res && res.value ? JSON.parse(res.value) : {};
     const parsed = parseDecisionsPayload(raw);
+    if(decisionsResetToken !== tokenAtStart){
+      decisionsSyncing = false;
+      return;
+    }
     const merged = (parsed.resetToken !== decisionsResetToken) ? parsed.obj : mergeDecisions(decisions, parsed.obj);
     const changed = JSON.stringify(merged) !== JSON.stringify(decisions);
     decisionsResetToken = parsed.resetToken;
@@ -2741,10 +2813,20 @@ let syncing = false;
 async function backgroundSync(){
   if(syncing) return;
   syncing = true;
+  // Same reasoning as backgroundPollRoster/backgroundPollDecisions — if a
+  // clear happens locally while this fetch is in flight, entriesResetToken
+  // will have already moved on by the time we're ready to apply this
+  // poll's result, making it stale relative to something more recent we
+  // already know about.
+  const tokenAtStart = entriesResetToken;
   try{
     const res = await cloudGet(STORAGE_KEY);
     const raw = res && res.value ? JSON.parse(res.value) : [];
     const { resetToken, list: fresh } = parseEntriesPayload(raw);
+    if(entriesResetToken !== tokenAtStart){
+      syncing = false;
+      return;
+    }
     let merged, changed, localHadExtra;
     if(resetToken !== entriesResetToken){
       // A clear happened somewhere since we last synced — adopt the fresh

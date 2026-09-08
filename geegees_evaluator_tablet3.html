@@ -1045,21 +1045,26 @@ function logStationEntry(){
   }
   if(loggingTooSoon()){ toast("Already logging — one moment"); return; }
   const st = SESSIONS[state.session].stations[state.station];
-  const data = {}; const fields = [];
+  const data = {};
   st.fields.forEach(f=>{
     if(f.type==='route'){
       f.routes.forEach(r=>{
         const v = state.values[f.id+'_'+r];
         data[r] = v ?? '';
-        if(v!==undefined && v!==null) fields.push({label:r, type:'route', value:v});
       });
     } else {
       const v = state.values[f.id];
       data[f.label] = v ?? '';
-      if(v!==undefined && v!==null && (f.type==='scale5' || f.type==='num')) fields.push({label:f.label, type:f.type, value:v});
     }
   });
-  entries.push({ ...baseMeta(), type:'Station', tag:st.tag, stationCode:st.code, station:st.name, data, fields });
+  // `fields` used to be stored here too — a redundant copy of exactly this
+  // same info, purely so skill averages could be computed later without
+  // re-deriving field types. Dropping it: computeSnapshot/computeSelection
+  // Metrics now derive the same thing from `data` plus the station's own
+  // field definitions (skillFieldValues), and at full-tryout scale that
+  // duplication was pushing the stored entries data past the 50,000
+  // character Google Sheets cell limit.
+  entries.push({ ...baseMeta(), type:'Station', tag:st.tag, stationCode:st.code, station:st.name, data });
   saveEntries(); renderLog();
   toast(`Logged — ${st.name}, Athlete #${state.values._athlete}`);
   const keepAthlete = state.values._athlete;
@@ -1218,22 +1223,21 @@ function generateSimulatedDay(sessionNum){
       const pod = pods[idx%5];
       sess.stations.forEach((st, si)=>{
         const evaluator = 'EV'+(si+1);
-        const data={}, fields=[];
+        const data={};
         st.fields.forEach(f=>{
           if(f.type==='route'){
             f.routes.forEach(r=>{
               const v = Math.floor(Math.random()*3)+3;
-              data[r]=v; fields.push({label:r, type:'route', value:v});
+              data[r]=v;
             });
           } else {
             const v = simulateFieldValue(f);
             data[f.label]=v;
-            if(f.type==='scale5' || f.type==='num') fields.push({label:f.label, type:f.type, value:v});
           }
         });
         tsBase += 1000*15;
         entries.push({ id:uid(), ts:new Date(tsBase).toISOString(), evaluator, group:pod,
-          session: sess.label, athlete: athleteNum, type:'Station', tag:st.tag, stationCode:st.code, station:st.name, data, fields });
+          session: sess.label, athlete: athleteNum, type:'Station', tag:st.tag, stationCode:st.code, station:st.name, data });
       });
       if(sess.scrimmage && Math.random()<0.85){
         const n = Math.floor(Math.random()*3)+1;
@@ -1346,6 +1350,34 @@ function filteredEntries(){
     return true;
   });
 }
+// Derives which of an entry's data values count toward the skill average,
+// by looking up the station's own field-type definitions — rather than
+// requiring each entry to carry its own redundant copy of that same type
+// information. This is what let `fields` be dropped from storage entirely:
+// it was pure duplication of `data` plus the station schema, and at scale
+// across a full 7-day tryout it was pushing entries data close to (and
+// eventually past) the 50,000-character-per-cell limit Google Sheets
+// enforces. Confirmed directly: the recovered dataset was 50,772
+// characters, 772 over the limit, before this was applied.
+function skillFieldValues(entry){
+  const dayKey = Object.keys(SESSIONS).find(k=>SESSIONS[k].label===entry.session);
+  if(!dayKey) return [];
+  const st = SESSIONS[dayKey].stations.find(s=>s.code===entry.stationCode);
+  if(!st || !entry.data) return [];
+  const values = [];
+  st.fields.forEach(f=>{
+    if(f.type==='scale5'){
+      const v = entry.data[f.label];
+      if(v!=='' && v!==null && v!==undefined) values.push(Number(v));
+    } else if(f.type==='route'){
+      (f.routes||[]).forEach(r=>{
+        const v = entry.data[r];
+        if(v!=='' && v!==null && v!==undefined) values.push(Number(v));
+      });
+    }
+  });
+  return values;
+}
 function computeSnapshot(athleteNum){
   const rows = entries.filter(e=> String(e.athlete)===String(athleteNum));
   if(!rows.length) return null;
@@ -1354,9 +1386,9 @@ function computeSnapshot(athleteNum){
     if(e.type==='Station' && e.tag==='COMBINE'){
       Object.entries(e.data).forEach(([k,v])=>{ if(v!=='' && v!==null && v!==undefined) combine.push(`${e.session} ${k}: ${v}`); });
     }
-    if(e.fields) e.fields.forEach(f=>{
-      if(f.type==='scale5' || f.type==='route'){ skillSum += Number(f.value); skillCount++; }
-    });
+    if(e.type==='Station'){
+      skillFieldValues(e).forEach(v=>{ skillSum += v; skillCount++; });
+    }
     if(e.type==='Scrimmage +/-' || e.type==='FIQ') compete += Number(e.data.points)||0;
     if(e.type==='TCS'){ tcsSum += Number(e.data.score)||0; tcsCount++; }
   });
@@ -2581,7 +2613,9 @@ function computeSelectionMetrics(pinny){
   const rows = entries.filter(e=> String(e.athlete)===String(pinny));
   let skillSum=0, skillCount=0, compete=0, tcsSum=0, tcsCount=0;
   rows.forEach(e=>{
-    if(e.fields) e.fields.forEach(f=>{ if(f.type==='scale5' || f.type==='route'){ skillSum += Number(f.value); skillCount++; } });
+    if(e.type==='Station'){
+      skillFieldValues(e).forEach(v=>{ skillSum += v; skillCount++; });
+    }
     if(e.type==='Scrimmage +/-' || e.type==='FIQ') compete += Number(e.data.points)||0;
     if(e.type==='TCS'){ tcsSum += Number(e.data.score)||0; tcsCount++; }
   });

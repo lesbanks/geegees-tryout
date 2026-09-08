@@ -602,10 +602,22 @@ function normalizeEntry(e){
   }
   return e;
 }
-function mergeEntriesById(local, fresh){
+// A deleted entry needs its own tombstone, travelling alongside the data
+// itself — otherwise the very next merge (from this device or any other
+// still holding the old copy in memory) sees the backend "missing"
+// something it has and helpfully adds it right back, since a plain union
+// merge has no way to distinguish "never synced yet" from "removed on
+// purpose." Confirmed directly: deleting an entry and then triggering a
+// normal save merge brought it straight back.
+let deletedEntryIds = [];
+function mergeDeletedIds(a, b){
+  return Array.from(new Set([...(a||[]), ...(b||[])]));
+}
+function mergeEntriesById(local, fresh, deletedIds){
+  const dead = new Set(deletedIds !== undefined ? deletedIds : deletedEntryIds);
   const map = new Map();
-  fresh.forEach(e=>{ if(e && e.id) map.set(e.id, normalizeEntry(e)); });
-  local.forEach(e=>{ if(e && e.id) map.set(e.id, normalizeEntry(e)); });
+  fresh.forEach(e=>{ if(e && e.id && !dead.has(e.id)) map.set(e.id, normalizeEntry(e)); });
+  local.forEach(e=>{ if(e && e.id && !dead.has(e.id)) map.set(e.id, normalizeEntry(e)); });
   return Array.from(map.values()).sort((a,b)=> new Date(a.ts) - new Date(b.ts));
 }
 // The merge-everything approach above protects against accidental data
@@ -621,23 +633,24 @@ function mergeEntriesById(local, fresh){
 // in the Sheet is a raw array with no envelope at all.
 let entriesResetToken = null;
 function parseEntriesPayload(raw){
-  if(Array.isArray(raw)) return { resetToken: null, list: raw.map(normalizeEntry) };
+  if(Array.isArray(raw)) return { resetToken: null, list: raw.map(normalizeEntry), deletedIds: [] };
   if(raw && typeof raw === 'object' && Array.isArray(raw.entries)){
-    return { resetToken: raw.resetToken || null, list: raw.entries.map(normalizeEntry) };
+    return { resetToken: raw.resetToken || null, list: raw.entries.map(normalizeEntry), deletedIds: raw.deletedIds || [] };
   }
-  return { resetToken: null, list: [] };
+  return { resetToken: null, list: [], deletedIds: [] };
 }
 async function loadEntries(){
   try{
     const res = await cloudGet(STORAGE_KEY);
     const raw = res && res.value ? JSON.parse(res.value) : [];
-    const { resetToken, list: fresh } = parseEntriesPayload(raw);
+    const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
     if(resetToken !== entriesResetToken){
       // A reset happened since we last knew about it (or this is a brand
       // new tab catching up to one that already occurred) — adopt the
       // fresh data directly rather than merging our possibly-stale local
       // copy back into it.
       entries = fresh;
+      deletedEntryIds = deletedIds;
     } else {
       // MERGE, never blindly replace — this is also called from the
       // "Refresh now" button, which could land while a save from a rep
@@ -645,6 +658,7 @@ async function loadEntries(){
       // refreshing while a save was pending wiped that rep both locally
       // AND in the backend (the still-queued save re-serializes whatever
       // `entries` is at the moment it actually runs).
+      deletedEntryIds = mergeDeletedIds(deletedEntryIds, deletedIds);
       entries = mergeEntriesById(entries, fresh);
     }
     entriesResetToken = resetToken;
@@ -697,12 +711,13 @@ async function saveEntries(){
           // — the check-once-before pattern doesn't protect against the
           // flag changing during the await itself.
           if(!entriesClearInProgress){
+            deletedEntryIds = mergeDeletedIds(deletedEntryIds, parsed.deletedIds);
             entries = mergeEntriesById(entries, parsed.list);
             entriesResetToken = parsed.resetToken;
           }
         }catch(e){}
       }
-      const payload = JSON.stringify({ resetToken: entriesResetToken, entries: entries });
+      const payload = JSON.stringify({ resetToken: entriesResetToken, entries: entries, deletedIds: deletedEntryIds });
       const res = await storageSet(STORAGE_KEY, payload, true);
       if(!res){ toast("Saved locally — sync failed"); return false; }
       return true;
@@ -983,10 +998,26 @@ function baseMeta(){
     athlete: state.values._athlete ?? '—'
   };
 }
+// Guards logStationEntry/logScrimmageEvent/logTcsEntry against a rapid
+// duplicate tap creating two identical entries — confirmed directly in
+// real Day 1 data: the same athlete's exact same result values showed up
+// twice in a row, which matches an accidental double-submit rather than
+// two genuinely separate reps. A short cooldown after each successful log
+// blocks an immediate repeat without getting in the way of legitimately
+// logging a different athlete or a new rep right after.
+let lastLogAt = 0;
+const LOG_COOLDOWN_MS = 900;
+function loggingTooSoon(){
+  const now = Date.now();
+  if(now - lastLogAt < LOG_COOLDOWN_MS) return true;
+  lastLogAt = now;
+  return false;
+}
 function logStationEntry(){
   if(state.values._athlete===undefined || state.values._athlete===null || state.values._athlete===''){
     toast("Enter an athlete # first"); return;
   }
+  if(loggingTooSoon()){ toast("Already logging — one moment"); return; }
   const st = SESSIONS[state.session].stations[state.station];
   const data = {}; const fields = [];
   st.fields.forEach(f=>{
@@ -1014,6 +1045,7 @@ function logScrimmageEvent(cat, ev){
   if(state.values._athlete===undefined || state.values._athlete===null || state.values._athlete===''){
     toast("Enter an athlete # first"); return;
   }
+  if(loggingTooSoon()){ toast("Already logging — one moment"); return; }
   state.runningPts = (state.runningPts||0) + ev.pts;
   entries.push({ ...baseMeta(), type: cat==='fiq'?'FIQ':'Scrimmage +/-', tag: cat==='fiq'?'FIQ':(cat==='offense'?'SCRIM-OFF':'SCRIM-DEF'), station: cat, data:{ event: ev.label, points: ev.pts } });
   saveEntries(); renderLog();
@@ -1025,6 +1057,7 @@ function logTcsEntry(){
     toast("Enter an athlete # first"); return;
   }
   if(state.values._tcs===undefined){ toast("Pick a TCS score first"); return; }
+  if(loggingTooSoon()){ toast("Already logging — one moment"); return; }
   entries.push({ ...baseMeta(), type:'TCS', tag:'TCS', station:'TCS', data:{ score: state.values._tcs } });
   saveEntries(); renderLog();
   toast(`TCS ${state.values._tcs} saved — Athlete #${state.values._athlete}`);
@@ -1251,6 +1284,8 @@ async function clearAllEntries(){
   // goes true during completely routine periodic syncing, not just an
   // intentional clear.
   entries = [];
+  deletedEntryIds = []; // the tombstone ledger is moot once everything's
+  // cleared — reset it so it doesn't grow forever across multiple resets.
   entriesResetToken = uid(); // signals to every OTHER open tab/device that
   // this is an intentional clear, not data loss to defensively undo —
   // without this, any other tab still holding the old entries in memory
@@ -1601,16 +1636,38 @@ function renderCoachLog(){
   const list = filteredEntries().slice(-200).reverse();
   if(!list.length){ el.innerHTML = '<p class="empty">No entries match this filter yet.</p>'; return; }
   let html = `<div class="logwrap"><table class="logtable"><thead><tr>
-    <th>Time</th><th>Day</th><th>Athlete</th><th>Type</th><th>Station/Event</th><th>Eval</th><th>Detail</th>
+    <th>Time</th><th>Day</th><th>Athlete</th><th>Type</th><th>Station/Event</th><th>Eval</th><th>Detail</th><th></th>
   </tr></thead><tbody>`;
   list.forEach(e=>{
     const t = new Date(e.ts);
     const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     const detail = Object.entries(e.data||{}).map(([k,v])=>`${k}:${v}`).join(' · ');
-    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+escapeHtml(nameForPinny(e.athlete)):''}</td><td>${e.type}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${escapeHtml(e.evaluator)}</td><td>${detail}</td></tr>`;
+    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+escapeHtml(nameForPinny(e.athlete)):''}</td><td>${e.type}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${escapeHtml(e.evaluator)}</td><td>${detail}</td><td><button class="rmbtn" data-delete-entry="${e.id}" title="Delete this entry">✕</button></td></tr>`;
   });
   html += `</tbody></table></div><p class="synctag">Showing last ${list.length} of ${filteredEntries().length} filtered entries (${entries.length} total synced).</p>`;
   el.innerHTML = html;
+  document.querySelectorAll('[data-delete-entry]').forEach(b=>{
+    b.onclick = ()=> deleteEntry(b.dataset.deleteEntry);
+  });
+}
+// Logging always ADDS a new entry, never replaces one — there was no way
+// to correct a duplicate or a bad tap short of hand-editing the Sheet.
+// This removes one specific entry by id and re-saves, so a mis-logged or
+// accidentally double-tapped rep can be cleaned up directly in the app.
+async function deleteEntry(id){
+  const e = entries.find(x=>x.id===id);
+  if(!e) return;
+  const desc = `${e.session}${e.stationCode?e.stationCode:''} — ${e.station}, athlete #${e.athlete}${nameForPinny(e.athlete)?' '+nameForPinny(e.athlete):''}`;
+  if(!await customConfirm(`Delete this entry? ${desc}. This can't be undone.`)) return;
+  deletedEntryIds = mergeDeletedIds(deletedEntryIds, [id]); // tombstone — see
+  // mergeEntriesById's comment: without this, the very next merge (from
+  // this device or any other still holding the old copy) would see the
+  // backend "missing" this entry and add it right back in.
+  entries = entries.filter(x=>x.id!==id);
+  await saveEntries();
+  toast('Entry deleted');
+  renderCoachLog(); renderSnapshot(); renderLiveTotals();
+  if(document.getElementById('stationResultsWrap')) renderStationResultsTable();
 }
 
 /* ---------------------------------------------------------------
@@ -2822,7 +2879,7 @@ async function backgroundSync(){
   try{
     const res = await cloudGet(STORAGE_KEY);
     const raw = res && res.value ? JSON.parse(res.value) : [];
-    const { resetToken, list: fresh } = parseEntriesPayload(raw);
+    const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
     if(entriesResetToken !== tokenAtStart){
       syncing = false;
       return;
@@ -2836,6 +2893,7 @@ async function backgroundSync(){
       // silently undoing someone else's intentional clear. Confirmed
       // directly with a simulated second tab.
       merged = fresh;
+      deletedEntryIds = deletedIds;
       changed = JSON.stringify(merged) !== JSON.stringify(entries);
       localHadExtra = false;
     } else {
@@ -2843,6 +2901,7 @@ async function backgroundSync(){
       // what's already sitting locally (e.g. mid-simulation, or another device's
       // save still in flight). Blindly replacing local entries with a stale
       // fetch silently discards not-yet-synced work. Union by id instead.
+      deletedEntryIds = mergeDeletedIds(deletedEntryIds, deletedIds);
       merged = mergeEntriesById(entries, fresh);
       changed = merged.length !== entries.length;
       localHadExtra = merged.length !== fresh.length;

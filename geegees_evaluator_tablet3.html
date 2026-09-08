@@ -705,6 +705,41 @@ function parseEntriesPayload(raw){
 // `entries` in memory stays a single flat array spanning all days, exactly
 // as before — every existing render/compute function is unaffected by
 // this; only the load/save layer needed to change.
+// One-time migration: entries used to live under a single STORAGE_KEY
+// before the day+station split. Anything still sitting there (from
+// before this update was deployed) needs to move into the new partition
+// keys, or it becomes invisible — nothing reads the old key anymore.
+// Safe to call every boot: once migrated, the old key is left empty, so
+// there's nothing left to re-migrate on subsequent loads.
+async function migrateOldEntriesFormat(){
+  try{
+    const res = await cloudGet(STORAGE_KEY);
+    if(!res || !res.value) return;
+    const raw = JSON.parse(res.value);
+    const parsed = parseEntriesPayload(raw);
+    if(!parsed.list.length) return;
+    const byPartition = {};
+    parsed.list.forEach(e=>{
+      const suffix = partitionSuffix(e);
+      const key = entriesKeyFor(e.session, suffix);
+      if(!byPartition[key]) byPartition[key] = { day: e.session, suffix, list: [] };
+      byPartition[key].list.push(e);
+    });
+    await Promise.all(Object.values(byPartition).map(async (p)=>{
+      const key = entriesKeyFor(p.day, p.suffix);
+      const existingRes = await cloudGet(key);
+      const existingRaw = existingRes && existingRes.value ? JSON.parse(existingRes.value) : [];
+      const existingParsed = parseEntriesPayload(existingRaw);
+      const merged = mergeEntriesById(p.list, existingParsed.list, existingParsed.deletedIds);
+      const payload = JSON.stringify({ resetToken: existingParsed.resetToken, entries: merged, deletedIds: existingParsed.deletedIds });
+      await storageSet(key, payload, true);
+    }));
+    // Leave the old key empty rather than deleting it — avoids re-running
+    // this migration on every future boot without needing a separate
+    // "already migrated" flag.
+    await storageSet(STORAGE_KEY, JSON.stringify({ resetToken: parsed.resetToken, entries: [], deletedIds: parsed.deletedIds }), true);
+  }catch(e){}
+}
 async function loadEntries(){
   const partitions = allPartitionKeys();
   const results = await Promise.all(partitions.map(async (p)=>{
@@ -752,10 +787,11 @@ async function loadEntries(){
 // enough in practice for the shared queue to matter.
 let entriesWriteChain = Promise.resolve();
 let entriesClearInProgress = false;
-async function saveEntries(dayLabel){
+async function saveEntries(dayLabel, suffix){
   entriesWriteChain = entriesWriteChain.then(async ()=>{
     try{
-      const key = entriesKeyForDay(dayLabel);
+      const key = entriesKeyFor(dayLabel, suffix);
+      const belongsHere = e => e.session===dayLabel && partitionSuffix(e)===suffix;
       if(!entriesClearInProgress){
         try{
           const res = await cloudGet(key);
@@ -766,20 +802,20 @@ async function saveEntries(dayLabel){
           // this merge would still run to completion once the fetch
           // resolves, using data from before the clear even happened.
           if(!entriesClearInProgress){
-            const localForDay = entries.filter(e=>e.session===dayLabel);
-            const mergedDeleted = mergeDeletedIds(deletedEntryIdsByDay[dayLabel], parsed.deletedIds);
-            const mergedForDay = mergeEntriesById(localForDay, parsed.list, mergedDeleted);
-            entriesResetTokens[dayLabel] = parsed.resetToken;
-            deletedEntryIdsByDay[dayLabel] = mergedDeleted;
-            entries = entries.filter(e=>e.session!==dayLabel).concat(mergedForDay);
+            const localForPartition = entries.filter(belongsHere);
+            const mergedDeleted = mergeDeletedIds(deletedEntryIdsByDay[key], parsed.deletedIds);
+            const mergedForPartition = mergeEntriesById(localForPartition, parsed.list, mergedDeleted);
+            entriesResetTokens[key] = parsed.resetToken;
+            deletedEntryIdsByDay[key] = mergedDeleted;
+            entries = entries.filter(e=>!belongsHere(e)).concat(mergedForPartition);
           }
         }catch(e){}
       }
-      const dayEntries = entries.filter(e=>e.session===dayLabel);
+      const partitionEntries = entries.filter(belongsHere);
       const payload = JSON.stringify({
-        resetToken: entriesResetTokens[dayLabel] || null,
-        entries: dayEntries,
-        deletedIds: deletedEntryIdsByDay[dayLabel] || []
+        resetToken: entriesResetTokens[key] || null,
+        entries: partitionEntries,
+        deletedIds: deletedEntryIdsByDay[key] || []
       });
       const res = await storageSet(key, payload, true);
       if(!res){ toast("Saved locally — sync failed"); return false; }
@@ -1108,7 +1144,7 @@ function logStationEntry(){
   // full-tryout entries list stays comfortably under the 50,000
   // character Google Sheets cell limit instead of pushing past it.
   entries.push({ ...baseMeta(), type:'Station', stationCode:st.code, data });
-  saveEntries(SESSIONS[state.session].label); renderLog();
+  saveEntries(SESSIONS[state.session].label, st.code); renderLog();
   toast(`Logged — ${st.name}, Athlete #${state.values._athlete}`);
   const keepAthlete = state.values._athlete;
   const keepPod = state.values._pod;
@@ -1122,7 +1158,7 @@ function logScrimmageEvent(cat, ev){
   if(loggingTooSoon()){ toast("Already logging — one moment"); return; }
   state.runningPts = (state.runningPts||0) + ev.pts;
   entries.push({ ...baseMeta(), type: cat==='fiq'?'FIQ':'Scrimmage +/-', tag: cat==='fiq'?'FIQ':(cat==='offense'?'SCRIM-OFF':'SCRIM-DEF'), station: cat, data:{ event: ev.label, points: ev.pts } });
-  saveEntries(SESSIONS[state.session].label); renderLog();
+  saveEntries(SESSIONS[state.session].label, 'other'); renderLog();
   toast(`${ev.pts>0?'+':''}${ev.pts} — ${ev.label}`);
   renderScrimmage();
 }
@@ -1133,7 +1169,7 @@ function logTcsEntry(){
   if(state.values._tcs===undefined){ toast("Pick a TCS score first"); return; }
   if(loggingTooSoon()){ toast("Already logging — one moment"); return; }
   entries.push({ ...baseMeta(), type:'TCS', tag:'TCS', station:'TCS', data:{ score: state.values._tcs } });
-  saveEntries(SESSIONS[state.session].label); renderLog();
+  saveEntries(SESSIONS[state.session].label, 'other'); renderLog();
   toast(`TCS ${state.values._tcs} saved — Athlete #${state.values._athlete}`);
 }
 
@@ -1357,21 +1393,21 @@ async function clearAllEntries(){
   // goes true during completely routine periodic syncing, not just an
   // intentional clear.
   entries = [];
-  const days = allDayLabels();
-  days.forEach(day=>{
-    deletedEntryIdsByDay[day] = []; // the tombstone ledger is moot once
+  const partitions = allPartitionKeys();
+  partitions.forEach(p=>{
+    deletedEntryIdsByDay[p.key] = []; // the tombstone ledger is moot once
     // everything's cleared — reset it so it doesn't grow forever across
     // multiple resets.
-    entriesResetTokens[day] = uid(); // signals to every OTHER open
+    entriesResetTokens[p.key] = uid(); // signals to every OTHER open
     // tab/device that this is an intentional clear, not data loss to
     // defensively undo — without this, any other tab still holding the
     // old entries in memory would push them right back up on its own
     // next routine sync. Confirmed directly with a simulated second tab.
   });
-  // Clear every day's key, not just the ones this device currently knows
-  // about — a day nobody's tablet has touched yet still needs its key
-  // reset in case it already has data from another device.
-  await Promise.all(days.map(day=> saveEntries(day)));
+  // Clear every partition, not just the ones this device currently knows
+  // about — a day/station nobody's tablet has touched yet still needs its
+  // key reset in case it already has data from another device.
+  await Promise.all(partitions.map(p=> saveEntries(p.day, p.suffix)));
   syncing = false;
   entriesClearInProgress = false;
   toast('Synced log cleared');
@@ -1790,12 +1826,14 @@ async function deleteEntry(id){
   const desc = `${e.session}${e.stationCode?e.stationCode:''} — ${entryStationName(e)}, athlete #${e.athlete}${nameForPinny(e.athlete)?' '+nameForPinny(e.athlete):''}`;
   if(!await customConfirm(`Delete this entry? ${desc}. This can't be undone.`)) return;
   const dayLabel = e.session;
-  deletedEntryIdsByDay[dayLabel] = mergeDeletedIds(deletedEntryIdsByDay[dayLabel], [id]); // tombstone — see
+  const suffix = partitionSuffix(e);
+  const key = entriesKeyFor(dayLabel, suffix);
+  deletedEntryIdsByDay[key] = mergeDeletedIds(deletedEntryIdsByDay[key], [id]); // tombstone — see
   // mergeEntriesById's comment: without this, the very next merge (from
   // this device or any other still holding the old copy) would see the
   // backend "missing" this entry and add it right back in.
   entries = entries.filter(x=>x.id!==id);
-  await saveEntries(dayLabel);
+  await saveEntries(dayLabel, suffix);
   toast('Entry deleted');
   renderCoachLog(); renderSnapshot(); renderLiveTotals();
   if(document.getElementById('stationResultsWrap')) renderStationResultsTable();
@@ -3003,69 +3041,77 @@ let syncing = false;
 async function backgroundSync(){
   if(syncing) return;
   syncing = true;
-  // Evaluator tablets only ever write to the ONE day they're actively
-  // logging for — polling all 7 day-keys every 8 seconds from every
-  // evaluator tablet would multiply backend load for no benefit, since
-  // that's the only day this device could possibly need. Coach/Sign-In/
-  // Team Selection views need the full picture across every day, since
-  // aggregate totals and Station Results span all of them.
-  const daysToPoll = state.viewMode==='evaluator' ? [SESSIONS[state.session].label] : allDayLabels();
+  // Evaluator tablets only ever write to the ONE partition (day+station,
+  // or day+'other' for scrimmage/TCS/FIQ) they're actively logging for —
+  // polling every partition from every evaluator tablet would multiply
+  // backend load for no benefit. Coach/Sign-In/Team Selection views need
+  // the full picture across every day and station, since aggregate
+  // totals and Station Results span all of them.
+  let partitionsToPoll;
+  if(state.viewMode==='evaluator'){
+    const day = SESSIONS[state.session].label;
+    const suffix = state.mode==='station' ? SESSIONS[state.session].stations[state.station].code : 'other';
+    partitionsToPoll = [{ day, suffix, key: entriesKeyFor(day, suffix) }];
+  } else {
+    partitionsToPoll = allPartitionKeys();
+  }
   try{
-    // Collect each day's result WITHOUT touching the shared `entries`
-    // array inside these parallel tasks — combining happens once, after
-    // every fetch resolves. Reassigning `entries` per-day while OTHER
-    // days' fetches are still in flight would let whichever day resolves
-    // last silently overwrite what an earlier day had just contributed.
-    const results = await Promise.all(daysToPoll.map(async (day)=>{
-      const tokenAtStart = entriesResetTokens[day];
+    // Collect each partition's result WITHOUT touching the shared
+    // `entries` array inside these parallel tasks — combining happens
+    // once, after every fetch resolves. Reassigning `entries` per-
+    // partition while OTHERS are still in flight would let whichever one
+    // resolves last silently overwrite what an earlier one contributed.
+    const results = await Promise.all(partitionsToPoll.map(async (p)=>{
+      const tokenAtStart = entriesResetTokens[p.key];
       try{
-        const res = await cloudGet(entriesKeyForDay(day));
+        const res = await cloudGet(p.key);
         const raw = res && res.value ? JSON.parse(res.value) : [];
         const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
-        if(entriesResetTokens[day] !== tokenAtStart){
-          // A reset happened locally for this day while this fetch was
-          // in flight — this result is now stale relative to something
-          // more recent we already know about. Discard rather than risk
-          // resurrecting pre-reset data.
-          return { day, skip:true };
+        if(entriesResetTokens[p.key] !== tokenAtStart){
+          // A reset happened locally for this partition while this fetch
+          // was in flight — this result is now stale relative to
+          // something more recent we already know about. Discard rather
+          // than risk resurrecting pre-reset data.
+          return { key:p.key, day:p.day, suffix:p.suffix, skip:true };
         }
-        const localForDay = entries.filter(e=>e.session===day);
-        let mergedForDay, newDeletedIds, localHadExtra, changed;
-        if(resetToken !== entriesResetTokens[day]){
-          // A clear happened somewhere since we last synced this day —
-          // adopt the fresh (smaller) data directly rather than merging
-          // our own stale local copy back in and undoing the clear.
-          mergedForDay = fresh;
+        const localForPartition = entries.filter(e=>e.session===p.day && partitionSuffix(e)===p.suffix);
+        let mergedForPartition, newDeletedIds, localHadExtra, changed;
+        if(resetToken !== entriesResetTokens[p.key]){
+          // A clear happened somewhere since we last synced this
+          // partition — adopt the fresh (smaller) data directly rather
+          // than merging our own stale local copy back in and undoing
+          // the clear.
+          mergedForPartition = fresh;
           newDeletedIds = deletedIds;
           localHadExtra = false;
-          changed = JSON.stringify(mergedForDay) !== JSON.stringify(localForDay);
+          changed = JSON.stringify(mergedForPartition) !== JSON.stringify(localForPartition);
         } else {
           // MERGE, never overwrite — union by id, respecting tombstones.
-          newDeletedIds = mergeDeletedIds(deletedEntryIdsByDay[day], deletedIds);
-          mergedForDay = mergeEntriesById(localForDay, fresh, newDeletedIds);
-          changed = mergedForDay.length !== localForDay.length;
-          localHadExtra = mergedForDay.length !== fresh.length;
+          newDeletedIds = mergeDeletedIds(deletedEntryIdsByDay[p.key], deletedIds);
+          mergedForPartition = mergeEntriesById(localForPartition, fresh, newDeletedIds);
+          changed = mergedForPartition.length !== localForPartition.length;
+          localHadExtra = mergedForPartition.length !== fresh.length;
         }
-        return { day, skip:false, resetToken, deletedIds:newDeletedIds, list:mergedForDay, localHadExtra, changed };
-      }catch(e){ return { day, skip:true }; }
+        return { key:p.key, day:p.day, suffix:p.suffix, skip:false, resetToken, deletedIds:newDeletedIds, list:mergedForPartition, localHadExtra, changed };
+      }catch(e){ return { key:p.key, day:p.day, suffix:p.suffix, skip:true }; }
     }));
     let anyChanged = false;
-    const daysNeedingPushback = [];
+    const partitionsNeedingPushback = [];
     let combined = entries.slice();
     results.forEach(r=>{
       if(r.skip) return;
-      entriesResetTokens[r.day] = r.resetToken;
-      deletedEntryIdsByDay[r.day] = r.deletedIds;
-      combined = combined.filter(e=>e.session!==r.day).concat(r.list);
+      entriesResetTokens[r.key] = r.resetToken;
+      deletedEntryIdsByDay[r.key] = r.deletedIds;
+      combined = combined.filter(e=>!(e.session===r.day && partitionSuffix(e)===r.suffix)).concat(r.list);
       if(r.changed) anyChanged = true;
-      if(r.localHadExtra) daysNeedingPushback.push(r.day);
+      if(r.localHadExtra) partitionsNeedingPushback.push(r);
     });
     entries = combined;
-    if(daysNeedingPushback.length){
+    if(partitionsNeedingPushback.length){
       // the backend was missing entries we already have locally for
-      // these day(s) — push the merged, complete set back up so it
+      // these partition(s) — push the merged, complete set back up so it
       // catches up instead of losing them.
-      await Promise.all(daysNeedingPushback.map(day=> saveEntries(day)));
+      await Promise.all(partitionsNeedingPushback.map(r=> saveEntries(r.day, r.suffix)));
     }
     if(anyChanged){
       if(state.viewMode==='coach'){ renderCoachLog(); renderSnapshot(); renderLiveTotals(); }
@@ -3108,7 +3154,11 @@ async function checkForNewVersion(){
 setInterval(checkForNewVersion, 120000);
 const versionReloadBtn = document.getElementById('versionReloadBtn');
 if(versionReloadBtn) versionReloadBtn.onclick = ()=> window.location.reload();
-Promise.all([loadEntries(), loadRosterFromCloud(), loadDecisionsFromCloud()]).then(renderAll);
+Promise.all([
+  migrateOldEntriesFormat().then(loadEntries),
+  loadRosterFromCloud(),
+  loadDecisionsFromCloud()
+]).then(renderAll);
 checkForNewVersion(); // also check once immediately on load, in case an
 // update shipped between when this tab's HTML was fetched and when its
 // JS finished parsing — a narrow window, but free to cover.

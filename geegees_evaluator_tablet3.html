@@ -591,10 +591,21 @@ function customConfirm(message){
 /* ---------------------------------------------------------------
    PERSISTENCE (shared across evaluator tablets)
 ---------------------------------------------------------------- */
+// Fixes up an entry logged under an older naming convention so every part
+// of the app treats it identically to current entries, instead of it
+// silently going invisible in views that filter/count by day. Confirmed
+// directly: an old-format entry (session:"S1" from before the D1/S1
+// rename) was missing from both Live Totals and Station Results.
+function normalizeEntry(e){
+  if(e && typeof e.session === 'string' && /^S[1-7]$/.test(e.session)){
+    e.session = 'D' + e.session.slice(1);
+  }
+  return e;
+}
 function mergeEntriesById(local, fresh){
   const map = new Map();
-  fresh.forEach(e=>{ if(e && e.id) map.set(e.id, e); });
-  local.forEach(e=>{ if(e && e.id) map.set(e.id, e); });
+  fresh.forEach(e=>{ if(e && e.id) map.set(e.id, normalizeEntry(e)); });
+  local.forEach(e=>{ if(e && e.id) map.set(e.id, normalizeEntry(e)); });
   return Array.from(map.values()).sort((a,b)=> new Date(a.ts) - new Date(b.ts));
 }
 // The merge-everything approach above protects against accidental data
@@ -610,9 +621,9 @@ function mergeEntriesById(local, fresh){
 // in the Sheet is a raw array with no envelope at all.
 let entriesResetToken = null;
 function parseEntriesPayload(raw){
-  if(Array.isArray(raw)) return { resetToken: null, list: raw };
+  if(Array.isArray(raw)) return { resetToken: null, list: raw.map(normalizeEntry) };
   if(raw && typeof raw === 'object' && Array.isArray(raw.entries)){
-    return { resetToken: raw.resetToken || null, list: raw.entries };
+    return { resetToken: raw.resetToken || null, list: raw.entries.map(normalizeEntry) };
   }
   return { resetToken: null, list: [] };
 }
@@ -651,6 +662,26 @@ let entriesWriteChain = Promise.resolve();
 async function saveEntries(){
   entriesWriteChain = entriesWriteChain.then(async ()=>{
     try{
+      // Fetch fresh and merge BEFORE saving — without this, a device whose
+      // local copy hasn't caught up with what OTHER evaluator tablets have
+      // already saved would overwrite the entire backend with its own
+      // incomplete picture, permanently destroying their work. This is the
+      // exact bug already fixed for roster/decisions, just never applied
+      // here. Confirmed directly against real Day 1 data: with 5 stations
+      // in rotation, only 2 evaluators' initials survived in the saved
+      // entries — everyone else's logged reps were silently overwritten.
+      // Skipped only when `syncing` is true, which means clearAllEntries
+      // itself is mid-clear right now and deliberately wants entries
+      // empty — merging old pre-clear data back in here would undo that.
+      if(!syncing){
+        try{
+          const res = await cloudGet(STORAGE_KEY);
+          const raw = res && res.value ? JSON.parse(res.value) : [];
+          const parsed = parseEntriesPayload(raw);
+          entries = mergeEntriesById(entries, parsed.list);
+          entriesResetToken = parsed.resetToken;
+        }catch(e){}
+      }
       const payload = JSON.stringify({ resetToken: entriesResetToken, entries: entries });
       const res = await storageSet(STORAGE_KEY, payload, true);
       if(!res){ toast("Saved locally — sync failed"); return false; }
@@ -1319,7 +1350,18 @@ function computeStationResults(dayLabel, stationCode){
     matching = entries.filter(e=> e.session===dayLabel && e.type==='FIQ');
     columns = [{key:'event', label:'Event'}, {key:'points', label:'Points'}];
   } else {
-    matching = entries.filter(e=> e.session===dayLabel && e.type==='Station' && e.stationCode===stationCode);
+    // Match by stationCode when present, but fall back to the station's
+    // descriptive name for older entries logged before that field existed
+    // — otherwise those reps are silently invisible here even though
+    // they're genuinely logged. Confirmed directly: entries missing
+    // stationCode dropped out of this view entirely without this fallback.
+    const dayKey = Object.keys(SESSIONS).find(k=>SESSIONS[k].label===dayLabel);
+    const stationDef = dayKey ? SESSIONS[dayKey].stations.find(st=>st.code===stationCode) : null;
+    matching = entries.filter(e=>{
+      if(e.session!==dayLabel || e.type!=='Station') return false;
+      if(e.stationCode) return e.stationCode===stationCode;
+      return stationDef && e.station===stationDef.name;
+    });
     const keySet = new Set();
     matching.forEach(e=> Object.keys(e.data||{}).forEach(k=>keySet.add(k)));
     columns = Array.from(keySet).map(k=>({ key:k, label:k }));

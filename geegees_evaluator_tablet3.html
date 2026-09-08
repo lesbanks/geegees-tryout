@@ -628,19 +628,48 @@ function normalizeEntry(e){
   }
   return e;
 }
+// Day-level splitting alone wasn't enough — confirmed directly: even
+// after dropping every redundant field, a FULLY completed single day
+// (5 stations x ~46 athletes x 2 reps = 460 entries) is ~85,000
+// characters, still 70% over the limit in one key. Splitting by
+// day+station instead brings each key down to ~17,000 characters at full
+// density — a real 3x margin, not a razor's edge. Scrimmage/TCS/FIQ
+// entries (no stationCode) share a single 'other' partition per day.
+function partitionSuffix(entry){
+  if(entry.type==='Station' && entry.stationCode) return entry.stationCode;
+  return 'other';
+}
+function entriesKeyFor(dayLabel, suffix){
+  return STORAGE_KEY + '-' + dayLabel + '-' + suffix;
+}
+function allPartitionKeys(){
+  const keys = [];
+  Object.values(SESSIONS).forEach(sess=>{
+    sess.stations.forEach(st=> keys.push({ day: sess.label, suffix: st.code, key: entriesKeyFor(sess.label, st.code) }));
+    keys.push({ day: sess.label, suffix: 'other', key: entriesKeyFor(sess.label, 'other') });
+  });
+  return keys;
+}
+function partitionKeyForEntry(entry){
+  return entriesKeyFor(entry.session, partitionSuffix(entry));
+}
+function allDayLabels(){
+  return Object.values(SESSIONS).map(s=>s.label);
+}
 // A deleted entry needs its own tombstone, travelling alongside the data
 // itself — otherwise the very next merge (from this device or any other
 // still holding the old copy in memory) sees the backend "missing"
 // something it has and helpfully adds it right back, since a plain union
 // merge has no way to distinguish "never synced yet" from "removed on
 // purpose." Confirmed directly: deleting an entry and then triggering a
-// normal save merge brought it straight back.
-let deletedEntryIds = [];
+// normal save merge brought it straight back. Kept PER DAY now, alongside
+// the per-day storage split below.
+let deletedEntryIdsByDay = {};
 function mergeDeletedIds(a, b){
   return Array.from(new Set([...(a||[]), ...(b||[])]));
 }
 function mergeEntriesById(local, fresh, deletedIds){
-  const dead = new Set(deletedIds !== undefined ? deletedIds : deletedEntryIds);
+  const dead = new Set(deletedIds || []);
   const map = new Map();
   fresh.forEach(e=>{ if(e && e.id && !dead.has(e.id)) map.set(e.id, normalizeEntry(e)); });
   local.forEach(e=>{ if(e && e.id && !dead.has(e.id)) map.set(e.id, normalizeEntry(e)); });
@@ -656,8 +685,8 @@ function mergeEntriesById(local, fresh, deletedIds){
 // themselves gives every device a way to recognize "a clear happened
 // since I last knew" and adopt the smaller data directly instead of
 // merging its own stale copy back in. Backward compatible: existing data
-// in the Sheet is a raw array with no envelope at all.
-let entriesResetToken = null;
+// in the Sheet is a raw array with no envelope at all. Kept PER DAY now.
+let entriesResetTokens = {};
 function parseEntriesPayload(raw){
   if(Array.isArray(raw)) return { resetToken: null, list: raw.map(normalizeEntry), deletedIds: [] };
   if(raw && typeof raw === 'object' && Array.isArray(raw.entries)){
@@ -665,30 +694,51 @@ function parseEntriesPayload(raw){
   }
   return { resetToken: null, list: [], deletedIds: [] };
 }
+// Entries are stored ONE KEY PER DAY (geegees-tryout-entries-D1,
+// -D2, etc.) rather than one giant key for the whole tryout. A single
+// key hit Google Sheets' 50,000-character-per-cell limit repeatedly —
+// confirmed directly, twice, with real data — and the math makes clear
+// it was never going to stop happening: even one FULLY completed day
+// (5 stations x ~46 athletes x 2 reps) needs roughly 122,000 characters,
+// well over double the limit, on its own. Splitting by day means each
+// key's size scales with one day's activity, not the whole season's.
+// `entries` in memory stays a single flat array spanning all days, exactly
+// as before — every existing render/compute function is unaffected by
+// this; only the load/save layer needed to change.
 async function loadEntries(){
-  try{
-    const res = await cloudGet(STORAGE_KEY);
-    const raw = res && res.value ? JSON.parse(res.value) : [];
-    const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
-    if(resetToken !== entriesResetToken){
-      // A reset happened since we last knew about it (or this is a brand
-      // new tab catching up to one that already occurred) — adopt the
-      // fresh data directly rather than merging our possibly-stale local
-      // copy back into it.
-      entries = fresh;
-      deletedEntryIds = deletedIds;
-    } else {
-      // MERGE, never blindly replace — this is also called from the
-      // "Refresh now" button, which could land while a save from a rep
-      // logged moments ago is still in flight. Confirmed directly:
-      // refreshing while a save was pending wiped that rep both locally
-      // AND in the backend (the still-queued save re-serializes whatever
-      // `entries` is at the moment it actually runs).
-      deletedEntryIds = mergeDeletedIds(deletedEntryIds, deletedIds);
-      entries = mergeEntriesById(entries, fresh);
+  const partitions = allPartitionKeys();
+  const results = await Promise.all(partitions.map(async (p)=>{
+    try{
+      const res = await cloudGet(p.key);
+      const raw = res && res.value ? JSON.parse(res.value) : [];
+      const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
+      const localForPartition = entries.filter(e=>e.session===p.day && partitionSuffix(e)===p.suffix);
+      const priorToken = entriesResetTokens[p.key] !== undefined ? entriesResetTokens[p.key] : null;
+      let mergedForPartition, newDeletedIds;
+      if(resetToken !== priorToken){
+        mergedForPartition = fresh;
+        newDeletedIds = deletedIds;
+      } else {
+        newDeletedIds = mergeDeletedIds(deletedEntryIdsByDay[p.key], deletedIds);
+        mergedForPartition = mergeEntriesById(localForPartition, fresh, newDeletedIds);
+      }
+      return { key: p.key, day: p.day, suffix: p.suffix, resetToken, deletedIds: newDeletedIds, list: mergedForPartition };
+    }catch(e){
+      return { key: p.key, day: p.day, suffix: p.suffix, resetToken: entriesResetTokens[p.key], deletedIds: deletedEntryIdsByDay[p.key], list: entries.filter(x=>x.session===p.day && partitionSuffix(x)===p.suffix) };
     }
-    entriesResetToken = resetToken;
-  }catch(e){}
+  }));
+  // Combined once, after every parallel fetch finishes — reassigning
+  // `entries` inside the per-partition loop above (while other
+  // partitions' fetches are still in flight) would let whichever one
+  // resolves last overwrite what an earlier-resolving partition had just
+  // contributed.
+  let combined = [];
+  results.forEach(r=>{
+    entriesResetTokens[r.key] = r.resetToken;
+    deletedEntryIdsByDay[r.key] = r.deletedIds;
+    combined = combined.concat(r.list);
+  });
+  entries = combined;
   renderLog();
 }
 // Serialized the same way as rosterWriteChain/decisionsWriteChain: rapid
@@ -697,54 +747,41 @@ async function loadEntries(){
 // earlier, smaller snapshot overwrite a later, more complete one. Each
 // queued write reads `entries` fresh at the moment it actually runs, so
 // by the time it's this write's turn, it always reflects everything
-// logged up to that point.
+// logged up to that point. One shared chain across all days — simpler
+// than per-day chains, and different days rarely get written to fast
+// enough in practice for the shared queue to matter.
 let entriesWriteChain = Promise.resolve();
 let entriesClearInProgress = false;
-async function saveEntries(){
+async function saveEntries(dayLabel){
   entriesWriteChain = entriesWriteChain.then(async ()=>{
     try{
-      // Fetch fresh and merge BEFORE saving — without this, a device whose
-      // local copy hasn't caught up with what OTHER evaluator tablets have
-      // already saved would overwrite the entire backend with its own
-      // incomplete picture, permanently destroying their work. This is the
-      // exact bug already fixed for roster/decisions, just never applied
-      // here. Confirmed directly against real Day 1 data: with 5 stations
-      // in rotation, only 2 evaluators' initials survived in the saved
-      // entries — everyone else's logged reps were silently overwritten.
-      // Skipped only when `entriesClearInProgress` is true, meaning
-      // clearAllEntries itself is mid-clear right now and deliberately
-      // wants entries empty — merging old pre-clear data back in here
-      // would undo that. Deliberately a SEPARATE flag from `syncing`:
-      // syncing also goes true during completely routine periodic
-      // background syncing, not just an intentional clear — checking
-      // that instead caused a save landing mid-poll to skip its merge
-      // and reintroduce the exact overwrite bug this is meant to
-      // prevent, confirmed directly by a save silently wiping out three
-      // other devices' work purely because a routine sync happened to be
-      // in flight at that moment.
+      const key = entriesKeyForDay(dayLabel);
       if(!entriesClearInProgress){
         try{
-          const res = await cloudGet(STORAGE_KEY);
+          const res = await cloudGet(key);
           const raw = res && res.value ? JSON.parse(res.value) : [];
           const parsed = parseEntriesPayload(raw);
           // Re-check AFTER the await, not just before it — a clear can
           // start WHILE this fetch is in flight, and without re-checking,
           // this merge would still run to completion once the fetch
           // resolves, using data from before the clear even happened.
-          // Confirmed directly: a save's fetch captured pre-clear data,
-          // a clear ran while it was in flight, and the save's merge
-          // still completed afterward and resurrected the cleared entry
-          // — the check-once-before pattern doesn't protect against the
-          // flag changing during the await itself.
           if(!entriesClearInProgress){
-            deletedEntryIds = mergeDeletedIds(deletedEntryIds, parsed.deletedIds);
-            entries = mergeEntriesById(entries, parsed.list);
-            entriesResetToken = parsed.resetToken;
+            const localForDay = entries.filter(e=>e.session===dayLabel);
+            const mergedDeleted = mergeDeletedIds(deletedEntryIdsByDay[dayLabel], parsed.deletedIds);
+            const mergedForDay = mergeEntriesById(localForDay, parsed.list, mergedDeleted);
+            entriesResetTokens[dayLabel] = parsed.resetToken;
+            deletedEntryIdsByDay[dayLabel] = mergedDeleted;
+            entries = entries.filter(e=>e.session!==dayLabel).concat(mergedForDay);
           }
         }catch(e){}
       }
-      const payload = JSON.stringify({ resetToken: entriesResetToken, entries: entries, deletedIds: deletedEntryIds });
-      const res = await storageSet(STORAGE_KEY, payload, true);
+      const dayEntries = entries.filter(e=>e.session===dayLabel);
+      const payload = JSON.stringify({
+        resetToken: entriesResetTokens[dayLabel] || null,
+        entries: dayEntries,
+        deletedIds: deletedEntryIdsByDay[dayLabel] || []
+      });
+      const res = await storageSet(key, payload, true);
       if(!res){ toast("Saved locally — sync failed"); return false; }
       return true;
     }catch(e){ toast("Saved locally — sync failed"); return false; }
@@ -1064,8 +1101,14 @@ function logStationEntry(){
   // field definitions (skillFieldValues), and at full-tryout scale that
   // duplication was pushing the stored entries data past the 50,000
   // character Google Sheets cell limit.
-  entries.push({ ...baseMeta(), type:'Station', tag:st.tag, stationCode:st.code, station:st.name, data });
-  saveEntries(); renderLog();
+  // `station` (the full descriptive name) and `tag` used to be stored
+  // here too — both fully derivable from session+stationCode via
+  // entryStationName/entryStationTag, so no need to duplicate them in
+  // every entry. Between this and dropping `fields` earlier, a
+  // full-tryout entries list stays comfortably under the 50,000
+  // character Google Sheets cell limit instead of pushing past it.
+  entries.push({ ...baseMeta(), type:'Station', stationCode:st.code, data });
+  saveEntries(SESSIONS[state.session].label); renderLog();
   toast(`Logged — ${st.name}, Athlete #${state.values._athlete}`);
   const keepAthlete = state.values._athlete;
   const keepPod = state.values._pod;
@@ -1079,7 +1122,7 @@ function logScrimmageEvent(cat, ev){
   if(loggingTooSoon()){ toast("Already logging — one moment"); return; }
   state.runningPts = (state.runningPts||0) + ev.pts;
   entries.push({ ...baseMeta(), type: cat==='fiq'?'FIQ':'Scrimmage +/-', tag: cat==='fiq'?'FIQ':(cat==='offense'?'SCRIM-OFF':'SCRIM-DEF'), station: cat, data:{ event: ev.label, points: ev.pts } });
-  saveEntries(); renderLog();
+  saveEntries(SESSIONS[state.session].label); renderLog();
   toast(`${ev.pts>0?'+':''}${ev.pts} — ${ev.label}`);
   renderScrimmage();
 }
@@ -1090,7 +1133,7 @@ function logTcsEntry(){
   if(state.values._tcs===undefined){ toast("Pick a TCS score first"); return; }
   if(loggingTooSoon()){ toast("Already logging — one moment"); return; }
   entries.push({ ...baseMeta(), type:'TCS', tag:'TCS', station:'TCS', data:{ score: state.values._tcs } });
-  saveEntries(); renderLog();
+  saveEntries(SESSIONS[state.session].label); renderLog();
   toast(`TCS ${state.values._tcs} saved — Athlete #${state.values._athlete}`);
 }
 
@@ -1109,7 +1152,7 @@ function renderLog(){
     const t = new Date(e.ts);
     const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     const detail = Object.entries(e.data||{}).map(([k,v])=>`${k}:${v}`).join(' · ');
-    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+escapeHtml(nameForPinny(e.athlete)):''}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${escapeHtml(e.evaluator)}</td><td>${detail}</td></tr>`;
+    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+escapeHtml(nameForPinny(e.athlete)):''}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${escapeHtml(entryStationName(e))}</td><td>${escapeHtml(e.evaluator)}</td><td>${detail}</td></tr>`;
   });
   html += `</tbody></table></div><p class="synctag">Showing last 30 of ${entries.length} synced entries.</p>`;
   wrap.innerHTML = html;
@@ -1129,7 +1172,7 @@ function toCsv(){
   const cols = ['ts','session','athlete','athleteName','evaluator','group','type','station','data'];
   const rows = [cols.join(',')];
   entries.forEach(e=>{
-    const row = [e.ts,e.session,e.athlete, csvSafe(nameForPinny(e.athlete)||''), csvSafe(e.evaluator),csvSafe(e.group),e.type,e.station, JSON.stringify(e.data).replace(/"/g,'""')];
+    const row = [e.ts,e.session,e.athlete, csvSafe(nameForPinny(e.athlete)||''), csvSafe(e.evaluator),csvSafe(e.group),e.type,csvSafe(entryStationName(e)), JSON.stringify(e.data).replace(/"/g,'""')];
     rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
   });
   return rows.join('\n');
@@ -1237,7 +1280,7 @@ function generateSimulatedDay(sessionNum){
         });
         tsBase += 1000*15;
         entries.push({ id:uid(), ts:new Date(tsBase).toISOString(), evaluator, group:pod,
-          session: sess.label, athlete: athleteNum, type:'Station', tag:st.tag, stationCode:st.code, station:st.name, data });
+          session: sess.label, athlete: athleteNum, type:'Station', stationCode:st.code, data });
       });
       if(sess.scrimmage && Math.random()<0.85){
         const n = Math.floor(Math.random()*3)+1;
@@ -1314,14 +1357,21 @@ async function clearAllEntries(){
   // goes true during completely routine periodic syncing, not just an
   // intentional clear.
   entries = [];
-  deletedEntryIds = []; // the tombstone ledger is moot once everything's
-  // cleared — reset it so it doesn't grow forever across multiple resets.
-  entriesResetToken = uid(); // signals to every OTHER open tab/device that
-  // this is an intentional clear, not data loss to defensively undo —
-  // without this, any other tab still holding the old entries in memory
-  // would push them right back up on its own next routine sync. Confirmed
-  // directly with a simulated second tab.
-  await saveEntries();
+  const days = allDayLabels();
+  days.forEach(day=>{
+    deletedEntryIdsByDay[day] = []; // the tombstone ledger is moot once
+    // everything's cleared — reset it so it doesn't grow forever across
+    // multiple resets.
+    entriesResetTokens[day] = uid(); // signals to every OTHER open
+    // tab/device that this is an intentional clear, not data loss to
+    // defensively undo — without this, any other tab still holding the
+    // old entries in memory would push them right back up on its own
+    // next routine sync. Confirmed directly with a simulated second tab.
+  });
+  // Clear every day's key, not just the ones this device currently knows
+  // about — a day nobody's tablet has touched yet still needs its key
+  // reset in case it already has data from another device.
+  await Promise.all(days.map(day=> saveEntries(day)));
   syncing = false;
   entriesClearInProgress = false;
   toast('Synced log cleared');
@@ -1359,6 +1409,28 @@ function filteredEntries(){
 // eventually past) the 50,000-character-per-cell limit Google Sheets
 // enforces. Confirmed directly: the recovered dataset was 50,772
 // characters, 772 over the limit, before this was applied.
+// Same principle as skillFieldValues: `station` (the full descriptive
+// name, often 30-40+ characters) and `tag` are fully derivable from
+// session+stationCode for any 'Station'-type entry, so they don't need to
+// be stored redundantly in every single entry. Scrimmage/TCS/FIQ entries
+// still store these directly, since those aren't "stations" with a
+// lookup-able definition. Falls back to whatever's actually stored, so
+// older entries created before this change keep working unchanged.
+function stationDefFor(entry){
+  const dayKey = Object.keys(SESSIONS).find(k=>SESSIONS[k].label===entry.session);
+  if(!dayKey) return null;
+  return SESSIONS[dayKey].stations.find(s=>s.code===entry.stationCode) || null;
+}
+function entryStationName(entry){
+  if(entry.station) return entry.station;
+  const st = stationDefFor(entry);
+  return st ? st.name : '';
+}
+function entryStationTag(entry){
+  if(entry.tag) return entry.tag;
+  const st = stationDefFor(entry);
+  return st ? st.tag : '';
+}
 function skillFieldValues(entry){
   const dayKey = Object.keys(SESSIONS).find(k=>SESSIONS[k].label===entry.session);
   if(!dayKey) return [];
@@ -1383,7 +1455,7 @@ function computeSnapshot(athleteNum){
   if(!rows.length) return null;
   const combine=[]; let skillSum=0, skillCount=0, compete=0, tcsSum=0, tcsCount=0;
   rows.forEach(e=>{
-    if(e.type==='Station' && e.tag==='COMBINE'){
+    if(e.type==='Station' && entryStationTag(e)==='COMBINE'){
       Object.entries(e.data).forEach(([k,v])=>{ if(v!=='' && v!==null && v!==undefined) combine.push(`${e.session} ${k}: ${v}`); });
     }
     if(e.type==='Station'){
@@ -1700,7 +1772,7 @@ function renderCoachLog(){
     const t = new Date(e.ts);
     const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
     const detail = Object.entries(e.data||{}).map(([k,v])=>`${k}:${v}`).join(' · ');
-    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+escapeHtml(nameForPinny(e.athlete)):''}</td><td>${e.type}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${e.station}</td><td>${escapeHtml(e.evaluator)}</td><td>${detail}</td><td><button class="rmbtn" data-delete-entry="${e.id}" title="Delete this entry">✕</button></td></tr>`;
+    html += `<tr><td>${timeStr}</td><td>${e.session}</td><td>#${e.athlete}${nameForPinny(e.athlete)?' '+escapeHtml(nameForPinny(e.athlete)):''}</td><td>${e.type}</td><td>${e.stationCode? e.session+e.stationCode+' — ':''}${escapeHtml(entryStationName(e))}</td><td>${escapeHtml(e.evaluator)}</td><td>${detail}</td><td><button class="rmbtn" data-delete-entry="${e.id}" title="Delete this entry">✕</button></td></tr>`;
   });
   html += `</tbody></table></div><p class="synctag">Showing last ${list.length} of ${filteredEntries().length} filtered entries (${entries.length} total synced).</p>`;
   el.innerHTML = html;
@@ -1715,14 +1787,15 @@ function renderCoachLog(){
 async function deleteEntry(id){
   const e = entries.find(x=>x.id===id);
   if(!e) return;
-  const desc = `${e.session}${e.stationCode?e.stationCode:''} — ${e.station}, athlete #${e.athlete}${nameForPinny(e.athlete)?' '+nameForPinny(e.athlete):''}`;
+  const desc = `${e.session}${e.stationCode?e.stationCode:''} — ${entryStationName(e)}, athlete #${e.athlete}${nameForPinny(e.athlete)?' '+nameForPinny(e.athlete):''}`;
   if(!await customConfirm(`Delete this entry? ${desc}. This can't be undone.`)) return;
-  deletedEntryIds = mergeDeletedIds(deletedEntryIds, [id]); // tombstone — see
+  const dayLabel = e.session;
+  deletedEntryIdsByDay[dayLabel] = mergeDeletedIds(deletedEntryIdsByDay[dayLabel], [id]); // tombstone — see
   // mergeEntriesById's comment: without this, the very next merge (from
   // this device or any other still holding the old copy) would see the
   // backend "missing" this entry and add it right back in.
   entries = entries.filter(x=>x.id!==id);
-  await saveEntries();
+  await saveEntries(dayLabel);
   toast('Entry deleted');
   renderCoachLog(); renderSnapshot(); renderLiveTotals();
   if(document.getElementById('stationResultsWrap')) renderStationResultsTable();
@@ -2930,52 +3003,73 @@ let syncing = false;
 async function backgroundSync(){
   if(syncing) return;
   syncing = true;
-  // Same reasoning as backgroundPollRoster/backgroundPollDecisions — if a
-  // clear happens locally while this fetch is in flight, entriesResetToken
-  // will have already moved on by the time we're ready to apply this
-  // poll's result, making it stale relative to something more recent we
-  // already know about.
-  const tokenAtStart = entriesResetToken;
+  // Evaluator tablets only ever write to the ONE day they're actively
+  // logging for — polling all 7 day-keys every 8 seconds from every
+  // evaluator tablet would multiply backend load for no benefit, since
+  // that's the only day this device could possibly need. Coach/Sign-In/
+  // Team Selection views need the full picture across every day, since
+  // aggregate totals and Station Results span all of them.
+  const daysToPoll = state.viewMode==='evaluator' ? [SESSIONS[state.session].label] : allDayLabels();
   try{
-    const res = await cloudGet(STORAGE_KEY);
-    const raw = res && res.value ? JSON.parse(res.value) : [];
-    const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
-    if(entriesResetToken !== tokenAtStart){
-      syncing = false;
-      return;
+    // Collect each day's result WITHOUT touching the shared `entries`
+    // array inside these parallel tasks — combining happens once, after
+    // every fetch resolves. Reassigning `entries` per-day while OTHER
+    // days' fetches are still in flight would let whichever day resolves
+    // last silently overwrite what an earlier day had just contributed.
+    const results = await Promise.all(daysToPoll.map(async (day)=>{
+      const tokenAtStart = entriesResetTokens[day];
+      try{
+        const res = await cloudGet(entriesKeyForDay(day));
+        const raw = res && res.value ? JSON.parse(res.value) : [];
+        const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
+        if(entriesResetTokens[day] !== tokenAtStart){
+          // A reset happened locally for this day while this fetch was
+          // in flight — this result is now stale relative to something
+          // more recent we already know about. Discard rather than risk
+          // resurrecting pre-reset data.
+          return { day, skip:true };
+        }
+        const localForDay = entries.filter(e=>e.session===day);
+        let mergedForDay, newDeletedIds, localHadExtra, changed;
+        if(resetToken !== entriesResetTokens[day]){
+          // A clear happened somewhere since we last synced this day —
+          // adopt the fresh (smaller) data directly rather than merging
+          // our own stale local copy back in and undoing the clear.
+          mergedForDay = fresh;
+          newDeletedIds = deletedIds;
+          localHadExtra = false;
+          changed = JSON.stringify(mergedForDay) !== JSON.stringify(localForDay);
+        } else {
+          // MERGE, never overwrite — union by id, respecting tombstones.
+          newDeletedIds = mergeDeletedIds(deletedEntryIdsByDay[day], deletedIds);
+          mergedForDay = mergeEntriesById(localForDay, fresh, newDeletedIds);
+          changed = mergedForDay.length !== localForDay.length;
+          localHadExtra = mergedForDay.length !== fresh.length;
+        }
+        return { day, skip:false, resetToken, deletedIds:newDeletedIds, list:mergedForDay, localHadExtra, changed };
+      }catch(e){ return { day, skip:true }; }
+    }));
+    let anyChanged = false;
+    const daysNeedingPushback = [];
+    let combined = entries.slice();
+    results.forEach(r=>{
+      if(r.skip) return;
+      entriesResetTokens[r.day] = r.resetToken;
+      deletedEntryIdsByDay[r.day] = r.deletedIds;
+      combined = combined.filter(e=>e.session!==r.day).concat(r.list);
+      if(r.changed) anyChanged = true;
+      if(r.localHadExtra) daysNeedingPushback.push(r.day);
+    });
+    entries = combined;
+    if(daysNeedingPushback.length){
+      // the backend was missing entries we already have locally for
+      // these day(s) — push the merged, complete set back up so it
+      // catches up instead of losing them.
+      await Promise.all(daysNeedingPushback.map(day=> saveEntries(day)));
     }
-    let merged, changed, localHadExtra;
-    if(resetToken !== entriesResetToken){
-      // A clear happened somewhere since we last synced — adopt the fresh
-      // (smaller) data directly. This is the exact mechanism that failed
-      // before: without checking the reset token, this branch would merge
-      // our own stale local entries back in and push them back up,
-      // silently undoing someone else's intentional clear. Confirmed
-      // directly with a simulated second tab.
-      merged = fresh;
-      deletedEntryIds = deletedIds;
-      changed = JSON.stringify(merged) !== JSON.stringify(entries);
-      localHadExtra = false;
-    } else {
-      // MERGE, never overwrite: a poll can resolve with a snapshot older than
-      // what's already sitting locally (e.g. mid-simulation, or another device's
-      // save still in flight). Blindly replacing local entries with a stale
-      // fetch silently discards not-yet-synced work. Union by id instead.
-      deletedEntryIds = mergeDeletedIds(deletedEntryIds, deletedIds);
-      merged = mergeEntriesById(entries, fresh);
-      changed = merged.length !== entries.length;
-      localHadExtra = merged.length !== fresh.length;
-    }
-    entries = merged;
-    entriesResetToken = resetToken;
-    if(changed){
+    if(anyChanged){
       if(state.viewMode==='coach'){ renderCoachLog(); renderSnapshot(); renderLiveTotals(); }
       else if(state.viewMode==='evaluator'){ renderLog(); }
-    }
-    if(localHadExtra){
-      // the backend was missing entries we already have locally — push the
-      // merged, complete set back up so it catches up instead of losing them.
-      await saveEntries();
     }
     updateSyncStatus('live');
   }catch(e){

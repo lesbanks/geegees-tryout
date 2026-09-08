@@ -597,18 +597,46 @@ function mergeEntriesById(local, fresh){
   local.forEach(e=>{ if(e && e.id) map.set(e.id, e); });
   return Array.from(map.values()).sort((a,b)=> new Date(a.ts) - new Date(b.ts));
 }
+// The merge-everything approach above protects against accidental data
+// loss between devices, but it can't tell "the backend shrank because of
+// a race" from "the backend shrank because someone deliberately cleared
+// it" — any OTHER open tab that still has the old data in memory would,
+// on its own next sync, see the backend is smaller and "helpfully" push
+// its stale copy back up, undoing the clear. Confirmed directly with a
+// simulated second tab. A reset token travelling alongside the entries
+// themselves gives every device a way to recognize "a clear happened
+// since I last knew" and adopt the smaller data directly instead of
+// merging its own stale copy back in. Backward compatible: existing data
+// in the Sheet is a raw array with no envelope at all.
+let entriesResetToken = null;
+function parseEntriesPayload(raw){
+  if(Array.isArray(raw)) return { resetToken: null, list: raw };
+  if(raw && typeof raw === 'object' && Array.isArray(raw.entries)){
+    return { resetToken: raw.resetToken || null, list: raw.entries };
+  }
+  return { resetToken: null, list: [] };
+}
 async function loadEntries(){
   try{
     const res = await cloudGet(STORAGE_KEY);
-    const fresh = res && res.value ? JSON.parse(res.value) : [];
-    // MERGE, never blindly replace — this is called both at startup (where
-    // it's harmless either way, since local is empty) and from the
-    // "Refresh now" button, which is user-triggered and could easily land
-    // while a save from a rep logged moments ago is still in flight.
-    // Confirmed directly: refreshing while a save was pending wiped that
-    // rep both locally AND in the backend (the still-queued save
-    // re-serializes whatever `entries` is at the moment it actually runs).
-    entries = mergeEntriesById(entries, fresh);
+    const raw = res && res.value ? JSON.parse(res.value) : [];
+    const { resetToken, list: fresh } = parseEntriesPayload(raw);
+    if(resetToken !== entriesResetToken){
+      // A reset happened since we last knew about it (or this is a brand
+      // new tab catching up to one that already occurred) — adopt the
+      // fresh data directly rather than merging our possibly-stale local
+      // copy back into it.
+      entries = fresh;
+    } else {
+      // MERGE, never blindly replace — this is also called from the
+      // "Refresh now" button, which could land while a save from a rep
+      // logged moments ago is still in flight. Confirmed directly:
+      // refreshing while a save was pending wiped that rep both locally
+      // AND in the backend (the still-queued save re-serializes whatever
+      // `entries` is at the moment it actually runs).
+      entries = mergeEntriesById(entries, fresh);
+    }
+    entriesResetToken = resetToken;
   }catch(e){}
   renderLog();
 }
@@ -623,7 +651,8 @@ let entriesWriteChain = Promise.resolve();
 async function saveEntries(){
   entriesWriteChain = entriesWriteChain.then(async ()=>{
     try{
-      const res = await storageSet(STORAGE_KEY, JSON.stringify(entries), true);
+      const payload = JSON.stringify({ resetToken: entriesResetToken, entries: entries });
+      const res = await storageSet(STORAGE_KEY, payload, true);
       if(!res){ toast("Saved locally — sync failed"); return false; }
       return true;
     }catch(e){ toast("Saved locally — sync failed"); return false; }
@@ -1167,6 +1196,11 @@ async function clearAllEntries(){
   // the old entries into the local display even though the backend itself
   // ends up correctly empty.
   entries = [];
+  entriesResetToken = uid(); // signals to every OTHER open tab/device that
+  // this is an intentional clear, not data loss to defensively undo —
+  // without this, any other tab still holding the old entries in memory
+  // would push them right back up on its own next routine sync. Confirmed
+  // directly with a simulated second tab.
   await saveEntries();
   syncing = false;
   toast('Synced log cleared');
@@ -1179,7 +1213,7 @@ async function clearAllEntries(){
    different view: totals, filters, and a per-athlete snapshot
    built from Section 7.1's Quick Reference Model.
 ---------------------------------------------------------------- */
-let coachFilters = { session:'all', type:'all', athlete:'' };
+let coachFilters = { session:'all', type:'all', athlete:'', resultsDay:'', resultsStation:'', resultsSort:'pinny', resultsDir:'asc' };
 
 function sessionCounts(){
   const counts = {};
@@ -1254,10 +1288,106 @@ function renderLiveTotals(){
     brk.innerHTML = html;
   }
 }
+// Options for the Station Results picker — every rotation station for the
+// selected day, plus the day's Scrimmage/TCS/FIQ logs treated as
+// pseudo-"stations" so a coach can also see those as a sortable list.
+function stationResultOptions(dayLabel){
+  const dayKey = Object.keys(SESSIONS).find(k=>SESSIONS[k].label===dayLabel);
+  if(!dayKey) return [];
+  const sess = SESSIONS[dayKey];
+  const opts = sess.stations.map(st=>({ value: st.code, label: `${st.code} — ${st.name}` }));
+  if(sess.scrimmage){
+    opts.push({ value:'SCRIM', label:'Scrimmage +/-' });
+    opts.push({ value:'TCS', label:'TCS' });
+    opts.push({ value:'FIQ', label:'Football IQ' });
+  }
+  return opts;
+}
+// Builds the rows + dynamic columns for a specific day+station. Columns
+// come straight from whatever fields were actually logged (station fields
+// vary — a combine station has time/split, a route station has one column
+// per route) so this works for any station without hardcoding its shape.
+function computeStationResults(dayLabel, stationCode){
+  let matching, columns;
+  if(stationCode==='SCRIM'){
+    matching = entries.filter(e=> e.session===dayLabel && e.type==='Scrimmage +/-');
+    columns = [{key:'event', label:'Event'}, {key:'points', label:'Points'}];
+  } else if(stationCode==='TCS'){
+    matching = entries.filter(e=> e.session===dayLabel && e.type==='TCS');
+    columns = [{key:'score', label:'TCS Score'}];
+  } else if(stationCode==='FIQ'){
+    matching = entries.filter(e=> e.session===dayLabel && e.type==='FIQ');
+    columns = [{key:'event', label:'Event'}, {key:'points', label:'Points'}];
+  } else {
+    matching = entries.filter(e=> e.session===dayLabel && e.type==='Station' && e.stationCode===stationCode);
+    const keySet = new Set();
+    matching.forEach(e=> Object.keys(e.data||{}).forEach(k=>keySet.add(k)));
+    columns = Array.from(keySet).map(k=>({ key:k, label:k }));
+  }
+  const rows = matching.map(e=>({
+    pinny: e.athlete,
+    name: nameForPinny(e.athlete) || '—',
+    evaluator: e.evaluator,
+    ts: e.ts,
+    data: e.data || {}
+  }));
+  return { columns, rows };
+}
+function sortStationRows(rows, sortKey, dir){
+  const mult = dir==='desc' ? -1 : 1;
+  const valueOf = (r)=>{
+    if(sortKey==='pinny') return r.pinny;
+    if(sortKey==='name') return r.name;
+    return r.data[sortKey];
+  };
+  return rows.slice().sort((a,b)=>{
+    const av = valueOf(a), bv = valueOf(b);
+    const an = Number(av), bn = Number(bv);
+    if(!isNaN(an) && !isNaN(bn) && av!=='' && bv!=='') return (an-bn)*mult;
+    return String(av??'').localeCompare(String(bv??''))*mult;
+  });
+}
+function stationResultsTableHtml(){
+  const { columns, rows } = computeStationResults(coachFilters.resultsDay, coachFilters.resultsStation);
+  const sorted = sortStationRows(rows, coachFilters.resultsSort, coachFilters.resultsDir);
+  if(!sorted.length) return '<p class="empty">No results logged yet for this day/station.</p>';
+  let html = `<div style="overflow-x:auto"><table class="roster"><thead><tr>
+    <th>Pinnie</th><th>Name</th>` + columns.map(c=>`<th>${escapeHtml(c.label)}</th>`).join('') + `<th>Eval</th>
+  </tr></thead><tbody>`;
+  sorted.forEach(r=>{
+    html += `<tr><td>#${r.pinny}</td><td>${escapeHtml(r.name)}</td>` +
+      columns.map(c=>`<td>${r.data[c.key]!==undefined && r.data[c.key]!=='' ? escapeHtml(String(r.data[c.key])) : '—'}</td>`).join('') +
+      `<td>${escapeHtml(r.evaluator||'')}</td></tr>`;
+  });
+  html += `</tbody></table></div>`;
+  return html;
+}
+function renderStationResultsTable(){
+  const wrap = document.getElementById('stationResultsWrap');
+  if(wrap) wrap.innerHTML = stationResultsTableHtml();
+}
+function exportStationResultsCsv(){
+  const { columns, rows } = computeStationResults(coachFilters.resultsDay, coachFilters.resultsStation);
+  const sorted = sortStationRows(rows, coachFilters.resultsSort, coachFilters.resultsDir);
+  const cols = ['pinny','name', ...columns.map(c=>c.key), 'evaluator','time'];
+  const csvRows = [cols.join(',')];
+  sorted.forEach(r=>{
+    const row = [r.pinny, csvSafe(r.name), ...columns.map(c=> r.data[c.key]!==undefined?r.data[c.key]:''), csvSafe(r.evaluator||''), r.ts];
+    csvRows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
+  });
+  const blob = new Blob([csvRows.join('\n')], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `geegees-${coachFilters.resultsDay}-${coachFilters.resultsStation}-results.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 function renderCoachDashboard(){
   const main = document.getElementById('mainArea');
   const counts = sessionCounts();
   const typeOptions = ['all','Station','Scrimmage +/-','FIQ','TCS'];
+  if(!coachFilters.resultsDay) coachFilters.resultsDay = SESSIONS[1].label;
+  if(!coachFilters.resultsStation) coachFilters.resultsStation = 'S1';
   let html = `<details class="card"><summary>Test Tools (dry-run before tryout day)</summary>
     <p class="focus" style="margin-top:8px">Simulates every currently-registered athlete (falls back to the 27-person seed roster if nobody's registered yet). Entries use evaluators EV1–EV5 (one per station) plus EV-SCRIM for scrimmage/TCS, so they're easy to spot and clear before the real thing.</p>
     <div class="filterbar">
@@ -1275,6 +1405,29 @@ function renderCoachDashboard(){
     <div class="statgrid" id="liveTotalsGrid"></div>
     <p class="focus" style="margin-top:12px">Breaks the day-level total above into what it's actually made of — reps at each station, plus scrimmage +/- events, TCS scores, and FIQ events. The Total row at the bottom should match the number in the box above for that day.</p>
     <div id="stationBreakdownWrap"></div>
+  </div>
+
+  <div class="card"><h2>Station Results</h2>
+    <p class="focus">Every logged result for one day + station, side by side — sortable by pinnie, name, or any result column.</p>
+    <div class="filterbar">
+      <select id="resultsDaySelect">` +
+        Object.values(SESSIONS).map(s=>`<option value="${s.label}" ${coachFilters.resultsDay===s.label?'selected':''}>${s.label} — ${s.name}</option>`).join('') +
+      `</select>
+      <select id="resultsStationSelect">` +
+        stationResultOptions(coachFilters.resultsDay).map(o=>`<option value="${o.value}" ${coachFilters.resultsStation===o.value?'selected':''}>${o.label}</option>`).join('') +
+      `</select>
+    </div>
+    <div class="filterbar">
+      <select id="resultsSortSelect">
+        <option value="pinny" ${coachFilters.resultsSort==='pinny'?'selected':''}>Sort: Pinnie #</option>
+        <option value="name" ${coachFilters.resultsSort==='name'?'selected':''}>Sort: Name</option>
+        ${computeStationResults(coachFilters.resultsDay, coachFilters.resultsStation).columns.map(c=>
+            `<option value="${c.key}" ${coachFilters.resultsSort===c.key?'selected':''}>Sort: ${escapeHtml(c.label)}</option>`).join('')}
+      </select>
+      <button id="resultsDirBtn" class="ghost" style="flex:0 0 auto">${coachFilters.resultsDir==='asc'?'↑ Ascending':'↓ Descending'}</button>
+    </div>
+    <div id="stationResultsWrap"></div>
+    <div class="exportbar"><button id="resultsExportBtn">Export This Table CSV</button></div>
   </div>
 
   <div class="card"><h2>Athlete Snapshot</h2>
@@ -1313,10 +1466,31 @@ function renderCoachDashboard(){
   };
   document.getElementById('simRunAllBtn').onclick = runSimulationAllSessions;
   document.getElementById('clearBtn').onclick = clearAllEntries;
+  document.getElementById('resultsDaySelect').onchange = (e)=>{
+    coachFilters.resultsDay = e.target.value;
+    coachFilters.resultsStation = ''; // reset so it falls back to a valid option for the new day
+    coachFilters.resultsSort = 'pinny';
+    renderCoachDashboard();
+  };
+  document.getElementById('resultsStationSelect').onchange = (e)=>{
+    coachFilters.resultsStation = e.target.value;
+    coachFilters.resultsSort = 'pinny';
+    renderCoachDashboard();
+  };
+  document.getElementById('resultsSortSelect').onchange = (e)=>{
+    coachFilters.resultsSort = e.target.value;
+    renderStationResultsTable();
+  };
+  document.getElementById('resultsDirBtn').onclick = ()=>{
+    coachFilters.resultsDir = coachFilters.resultsDir==='asc' ? 'desc' : 'asc';
+    renderCoachDashboard();
+  };
+  document.getElementById('resultsExportBtn').onclick = exportStationResultsCsv;
 
   renderSnapshot();
   renderCoachLog();
   renderLiveTotals();
+  renderStationResultsTable();
 }
 function renderSnapshot(){
   const el = document.getElementById('snapshotArea');
@@ -1428,6 +1602,18 @@ function parseRosterText(text){
     return { listNum, name, year, pos: posCols.join(', '), paidRaw };
   }).filter(r=>r.name);
 }
+// Same reset-token mechanism as entries — see loadEntries for the full
+// reasoning. Without it, any other open tab still holding the pre-reset
+// roster in memory would push it back up on its own next routine sync,
+// silently undoing Reset Everything.
+let rosterResetToken = null;
+function parseRosterPayload(raw){
+  if(Array.isArray(raw)) return { resetToken: null, list: raw };
+  if(raw && typeof raw === 'object' && Array.isArray(raw.roster)){
+    return { resetToken: raw.resetToken || null, list: raw.roster };
+  }
+  return { resetToken: null, list: [] };
+}
 async function withFreshRoster(mutator){
   // OPTIMISTIC PASS: apply the change to what's already on screen and
   // render immediately — this is what makes the tap feel instant instead
@@ -1441,17 +1627,28 @@ async function withFreshRoster(mutator){
   // different athletes back-to-back would let whichever save finishes last
   // overwrite the others with a stale snapshot that never saw them.
   rosterWriteChain = rosterWriteChain.then(async ()=>{
-    let current;
+    let current, fetchedToken;
     try{
       const res = await cloudGet(CHECKIN_KEY);
-      current = res && res.value ? JSON.parse(res.value) : [];
-    }catch(e){ current = roster.slice(); }
+      const raw = res && res.value ? JSON.parse(res.value) : [];
+      const parsed = parseRosterPayload(raw);
+      current = parsed.list; fetchedToken = parsed.resetToken;
+    }catch(e){ current = roster.slice(); fetchedToken = rosterResetToken; }
     const updated = mutator(current) || current;
-    // MERGE, don't blindly overwrite — see withFreshDecisions for the full
-    // reasoning. Same fix, same underlying pattern.
-    roster = mergeRoster(roster, updated);
+    if(fetchedToken !== rosterResetToken){
+      // A reset happened elsewhere since we last knew — adopt the fresh
+      // (post-reset) result directly rather than merging our own
+      // possibly-stale local roster back into it.
+      roster = updated;
+    } else {
+      // MERGE, don't blindly overwrite — see withFreshDecisions for the full
+      // reasoning. Same fix, same underlying pattern.
+      roster = mergeRoster(roster, updated);
+    }
+    rosterResetToken = fetchedToken;
     try{
-      const res = await storageSet(CHECKIN_KEY, JSON.stringify(roster), true);
+      const payload = JSON.stringify({ resetToken: rosterResetToken, roster: roster });
+      const res = await storageSet(CHECKIN_KEY, payload, true);
       if(!res) toast('Saved locally — sync failed');
     }catch(e){ toast('Saved locally — sync failed'); }
     renderCheckinMain();
@@ -1461,7 +1658,10 @@ async function withFreshRoster(mutator){
 async function loadRosterFromCloud(){
   try{
     const res = await cloudGet(CHECKIN_KEY);
-    roster = res && res.value ? JSON.parse(res.value) : [];
+    const raw = res && res.value ? JSON.parse(res.value) : [];
+    const parsed = parseRosterPayload(raw);
+    roster = (parsed.resetToken !== rosterResetToken) ? parsed.list : mergeRoster(roster, parsed.list);
+    rosterResetToken = parsed.resetToken;
   }catch(e){ roster = []; }
 }
 // Same reasoning as mergeDecisions — never blindly overwrite. Roster
@@ -1490,9 +1690,11 @@ async function backgroundPollRoster(){
   if(rosterSyncing) return; rosterSyncing = true;
   try{
     const res = await cloudGet(CHECKIN_KEY);
-    const fresh = res && res.value ? JSON.parse(res.value) : [];
-    const merged = mergeRoster(roster, fresh);
+    const raw = res && res.value ? JSON.parse(res.value) : [];
+    const parsed = parseRosterPayload(raw);
+    const merged = (parsed.resetToken !== rosterResetToken) ? parsed.list : mergeRoster(roster, parsed.list);
     const changed = JSON.stringify(merged) !== JSON.stringify(roster);
+    rosterResetToken = parsed.resetToken;
     if(changed){
       roster = merged;
       if(state.viewMode==='checkin'){
@@ -1787,11 +1989,14 @@ async function resetRosterEverything(){
   decisionsSyncing = true; // merge the about-to-be-cleared data back in
   roster = [];
   decisions = {};
+  rosterResetToken = uid(); // signal to every other open tab/device that
+  decisionsResetToken = uid(); // this is intentional, not data loss to undo —
+  // same reasoning as clearAllEntries's reset token.
   state.checkinShowLoader = true;
   renderCheckinMain();
   try{
-    const res1 = await storageSet(CHECKIN_KEY, JSON.stringify([]), true);
-    const res2 = await storageSet(DECISIONS_KEY, JSON.stringify({}), true);
+    const res1 = await storageSet(CHECKIN_KEY, JSON.stringify({ resetToken: rosterResetToken, roster: [] }), true);
+    const res2 = await storageSet(DECISIONS_KEY, JSON.stringify({ resetToken: decisionsResetToken, decisions: {} }), true);
     if(!res1 || !res2){ toast('Reset did not fully sync — check connection and try again'); }
     else toast('Roster, pinnies, check-ins, and team decisions all cleared');
   }catch(e){
@@ -2037,6 +2242,15 @@ state.compareMatches = [];
 const DECISION_LABELS = { team1:'Team 1', team2:'Team 2', reserve:'Reserve', release:'Release' };
 function statusLabel(status){ return DECISION_LABELS[status] || 'Undecided'; }
 
+// Same reset-token mechanism as entries/roster.
+let decisionsResetToken = null;
+function parseDecisionsPayload(raw){
+  if(raw && typeof raw === 'object' && !Array.isArray(raw) && raw.decisions && typeof raw.decisions === 'object'){
+    return { resetToken: raw.resetToken || null, obj: raw.decisions };
+  }
+  if(raw && typeof raw === 'object' && !Array.isArray(raw)) return { resetToken: null, obj: raw };
+  return { resetToken: null, obj: {} };
+}
 async function withFreshDecisions(mutator){
   // OPTIMISTIC PASS: still instant, still runs immediately regardless of
   // whatever else is mid-flight — see withFreshRoster's comment.
@@ -2047,24 +2261,35 @@ async function withFreshDecisions(mutator){
   // so this one's "fetch fresh" always reflects every decision made before
   // it, not just the ones whose round trip happened to finish first.
   decisionsWriteChain = decisionsWriteChain.then(async ()=>{
-    let current;
+    let current, fetchedToken;
     try{
       const res = await cloudGet(DECISIONS_KEY);
-      current = res && res.value ? JSON.parse(res.value) : {};
-    }catch(e){ current = {...decisions}; }
+      const raw = res && res.value ? JSON.parse(res.value) : {};
+      const parsed = parseDecisionsPayload(raw);
+      current = parsed.obj; fetchedToken = parsed.resetToken;
+    }catch(e){ current = {...decisions}; fetchedToken = decisionsResetToken; }
     const updated = mutator(current) || current;
-    // MERGE, don't blindly overwrite: `updated` only reflects THIS action's
-    // effect on top of a fetch that predates other still-in-flight clicks —
-    // it has no idea about a different decision someone else made a moment
-    // ago that hasn't reached ITS OWN authoritative turn yet. A blind
-    // assignment here would erase that pending click until its own turn
-    // came up seconds later. Confirmed directly: clicking three players in
-    // quick succession showed the 2nd and 3rd as unselected for over a
-    // second, purely from this pattern, even though nothing was ever lost
-    // from the eventual saved result.
-    decisions = mergeDecisions(decisions, updated);
+    if(fetchedToken !== decisionsResetToken){
+      // A reset happened elsewhere since we last knew — adopt the fresh
+      // (post-reset) result directly instead of merging our own possibly
+      // stale local decisions back into it.
+      decisions = updated;
+    } else {
+      // MERGE, don't blindly overwrite: `updated` only reflects THIS action's
+      // effect on top of a fetch that predates other still-in-flight clicks —
+      // it has no idea about a different decision someone else made a moment
+      // ago that hasn't reached ITS OWN authoritative turn yet. A blind
+      // assignment here would erase that pending click until its own turn
+      // came up seconds later. Confirmed directly: clicking three players in
+      // quick succession showed the 2nd and 3rd as unselected for over a
+      // second, purely from this pattern, even though nothing was ever lost
+      // from the eventual saved result.
+      decisions = mergeDecisions(decisions, updated);
+    }
+    decisionsResetToken = fetchedToken;
     try{
-      const res = await storageSet(DECISIONS_KEY, JSON.stringify(decisions), true);
+      const payload = JSON.stringify({ resetToken: decisionsResetToken, decisions: decisions });
+      const res = await storageSet(DECISIONS_KEY, payload, true);
       if(!res) toast('Saved locally — sync failed');
     }catch(e){ toast('Saved locally — sync failed'); }
     renderSelectionMain();
@@ -2074,7 +2299,10 @@ async function withFreshDecisions(mutator){
 async function loadDecisionsFromCloud(){
   try{
     const res = await cloudGet(DECISIONS_KEY);
-    decisions = res && res.value ? JSON.parse(res.value) : {};
+    const raw = res && res.value ? JSON.parse(res.value) : {};
+    const parsed = parseDecisionsPayload(raw);
+    decisions = (parsed.resetToken !== decisionsResetToken) ? parsed.obj : mergeDecisions(decisions, parsed.obj);
+    decisionsResetToken = parsed.resetToken;
   }catch(e){ decisions = {}; }
 }
 // Merges by pinny, never blindly overwrites: for each athlete present on
@@ -2101,9 +2329,11 @@ async function backgroundPollDecisions(){
   if(decisionsSyncing) return; decisionsSyncing = true;
   try{
     const res = await cloudGet(DECISIONS_KEY);
-    const fresh = res && res.value ? JSON.parse(res.value) : {};
-    const merged = mergeDecisions(decisions, fresh);
+    const raw = res && res.value ? JSON.parse(res.value) : {};
+    const parsed = parseDecisionsPayload(raw);
+    const merged = (parsed.resetToken !== decisionsResetToken) ? parsed.obj : mergeDecisions(decisions, parsed.obj);
     const changed = JSON.stringify(merged) !== JSON.stringify(decisions);
+    decisionsResetToken = parsed.resetToken;
     if(changed){
       decisions = merged;
       if(state.viewMode==='selection'){
@@ -2471,15 +2701,30 @@ async function backgroundSync(){
   syncing = true;
   try{
     const res = await cloudGet(STORAGE_KEY);
-    const fresh = res && res.value ? JSON.parse(res.value) : [];
-    // MERGE, never overwrite: a poll can resolve with a snapshot older than
-    // what's already sitting locally (e.g. mid-simulation, or another device's
-    // save still in flight). Blindly replacing local entries with a stale
-    // fetch silently discards not-yet-synced work. Union by id instead.
-    const merged = mergeEntriesById(entries, fresh);
-    const changed = merged.length !== entries.length;
-    const localHadExtra = merged.length !== fresh.length;
+    const raw = res && res.value ? JSON.parse(res.value) : [];
+    const { resetToken, list: fresh } = parseEntriesPayload(raw);
+    let merged, changed, localHadExtra;
+    if(resetToken !== entriesResetToken){
+      // A clear happened somewhere since we last synced — adopt the fresh
+      // (smaller) data directly. This is the exact mechanism that failed
+      // before: without checking the reset token, this branch would merge
+      // our own stale local entries back in and push them back up,
+      // silently undoing someone else's intentional clear. Confirmed
+      // directly with a simulated second tab.
+      merged = fresh;
+      changed = JSON.stringify(merged) !== JSON.stringify(entries);
+      localHadExtra = false;
+    } else {
+      // MERGE, never overwrite: a poll can resolve with a snapshot older than
+      // what's already sitting locally (e.g. mid-simulation, or another device's
+      // save still in flight). Blindly replacing local entries with a stale
+      // fetch silently discards not-yet-synced work. Union by id instead.
+      merged = mergeEntriesById(entries, fresh);
+      changed = merged.length !== entries.length;
+      localHadExtra = merged.length !== fresh.length;
+    }
     entries = merged;
+    entriesResetToken = resetToken;
     if(changed){
       if(state.viewMode==='coach'){ renderCoachLog(); renderSnapshot(); renderLiveTotals(); }
       else if(state.viewMode==='evaluator'){ renderLog(); }
@@ -2521,4 +2766,3 @@ window.addEventListener('beforeunload', function(e){
 </script>
 </body>
 </html>
-

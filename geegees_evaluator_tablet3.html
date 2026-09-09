@@ -547,11 +547,48 @@ async function cloudGet(key){
   try{
     const controller = new AbortController();
     const timer = setTimeout(()=>controller.abort(), 8000);
-    const res = await fetch(`${BACKEND_URL}?key=${encodeURIComponent(key)}`, { signal: controller.signal });
+    // cache:'no-store' matters here specifically because of how Apps
+    // Script serves this: the /exec URL redirects internally to a
+    // script.googleusercontent.com/macros/echo?user_content_key=...
+    // URL that's tied to a SPECIFIC deployment. Without this, the
+    // browser can cache that redirect and keep replaying it — and once
+    // the backend is redeployed (which invalidates the old key), every
+    // subsequent read through that cached redirect 404s, even though a
+    // fresh request to /exec would work fine. Confirmed directly from a
+    // real console log: cloudGet failing with a 404 on exactly that
+    // googleusercontent.com/macros/echo URL, called from
+    // backgroundPollRoster — this is what caused roster data (and
+    // therefore names) to intermittently stop updating on a tablet
+    // whose cache still held a stale redirect from before a redeploy.
+    const res = await fetch(`${BACKEND_URL}?key=${encodeURIComponent(key)}`, { signal: controller.signal, cache: 'no-store' });
     clearTimeout(timer);
     if(!res.ok) return null;
     const data = await res.json();
     return (data && data.value !== undefined && data.value !== null) ? { value: data.value } : null;
+  }catch(e){ return null; }
+}
+// Fetches many keys in ONE request instead of one request per key — the
+// real fix for slow loading, not just a smaller symptom of it. Loading
+// entries used to fire up to 42 separate requests (one per day+station
+// partition, most of which don't even have data yet), and each one made
+// the backend re-read the ENTIRE sheet from scratch (see doGet's own
+// comment on the backend side). One batched request means one sheet
+// read total, no matter how many keys are being asked for. Returns null
+// on any failure — callers already have a defensive fallback for that,
+// same as a single cloudGet failing.
+async function cloudGetBatch(keys){
+  try{
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), 8000);
+    const keysParam = keys.map(k=>encodeURIComponent(k)).join(',');
+    // Same reasoning as cloudGet's cache:'no-store' — this call is at
+    // even higher risk of hitting a stale cached redirect, since it's
+    // the one used for the full boot load and every coach-view poll.
+    const res = await fetch(`${BACKEND_URL}?keys=${keysParam}`, { signal: controller.signal, cache: 'no-store' });
+    clearTimeout(timer);
+    if(!res.ok) return null;
+    const data = await res.json();
+    return (data && data.values) ? data.values : null;
   }catch(e){ return null; }
 }
 async function cloudSet(key, value){
@@ -567,10 +604,13 @@ async function cloudSet(key, value){
     // status or body at all), so reaching this line without an exception is
     // the only confirmation available — and it's an accurate one, since the
     // one thing that DOES still throw here is a real network failure or the
-    // 8-second timeout above.
+    // 8-second timeout above. cache:'no-store' added for the same reason as
+    // the read paths — a stale cached redirect here could otherwise make a
+    // write silently target an invalidated execution key after a redeploy.
     await fetch(BACKEND_URL, {
       method: 'POST',
       mode: 'no-cors',
+      cache: 'no-store',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({ key, value, version: APP_VERSION }),
       signal: controller.signal
@@ -742,10 +782,29 @@ async function migrateOldEntriesFormat(){
 }
 async function loadEntries(){
   const partitions = allPartitionKeys();
-  const results = await Promise.all(partitions.map(async (p)=>{
+  const batch = await cloudGetBatch(partitions.map(p=>p.key));
+  const results = partitions.map((p)=>{
     try{
-      const res = await cloudGet(p.key);
-      const raw = res && res.value ? JSON.parse(res.value) : [];
+      // batch===null means the WHOLE request failed (network/timeout) —
+      // fall back to treating every partition as "nothing new," same
+      // defensive behavior each partition's own catch block already had
+      // when only ITS fetch failed. A missing/null entry within a
+      // successful batch just means that key has no data yet, same as
+      // cloudGet returning null for an empty key.
+      const rawValue = batch ? batch[p.key] : undefined;
+      if(batch === null){
+        // The WHOLE batch request failed — this must NOT be treated as
+        // "the backend returned empty data" (which would look identical
+        // to a genuine reset and wipe local entries for every partition).
+        // Throwing here routes through the same catch-block fallback an
+        // individual partition's own failed fetch already used: keep
+        // whatever's local, change nothing. Confirmed directly: without
+        // this, a single network hiccup during boot could silently wipe
+        // every partition's local data, since a null/absent resetToken
+        // doesn't match whatever non-null token was already on record.
+        throw new Error('batch fetch failed');
+      }
+      const raw = rawValue ? JSON.parse(rawValue) : [];
       const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
       const localForPartition = entries.filter(e=>e.session===p.day && partitionSuffix(e)===p.suffix);
       const priorToken = entriesResetTokens[p.key] !== undefined ? entriesResetTokens[p.key] : null;
@@ -763,7 +822,7 @@ async function loadEntries(){
     }catch(e){
       return { key: p.key, day: p.day, suffix: p.suffix, resetToken: entriesResetTokens[p.key], deletedIds: deletedEntryIdsByDay[p.key], list: entries.filter(x=>x.session===p.day && partitionSuffix(x)===p.suffix), wasReset:false };
     }
-  }));
+  });
   // Combined once, after every parallel fetch finishes — reassigning
   // `entries` inside the per-partition loop above (while other
   // partitions' fetches are still in flight) would let whichever one
@@ -1381,9 +1440,33 @@ function generateSimulatedDay(sessionNum){
   }
   return simRoster.length;
 }
+// runSimulation/runSimulationAllSessions generate entries spanning
+// MULTIPLE days and stations at once — unlike real evaluator logging,
+// which always knows exactly one partition to save to, these need to
+// persist every partition that now has local data. This determines
+// which partitions those are and saves each one correctly, instead of
+// the single dayLabel+suffix saveEntries expects for the normal path.
+async function saveAllLocalPartitions(){
+  const targets = new Map(); // key -> {day, suffix}
+  entries.forEach(e=>{
+    const suffix = partitionSuffix(e);
+    const key = entriesKeyFor(e.session, suffix);
+    if(!targets.has(key)) targets.set(key, { day: e.session, suffix });
+  });
+  const results = await Promise.all(Array.from(targets.values()).map(t => saveEntries(t.day, t.suffix)));
+  return results.every(r => r !== false);
+}
 async function runSimulation(sessionNum){
   const n = generateSimulatedDay(sessionNum);
-  const res = await saveEntries();
+  // Was calling saveEntries() with no arguments — a leftover from before
+  // entries were split by day+station. With no dayLabel/suffix, that
+  // built a key literally named "...-undefined-undefined" and filtered
+  // for entries matching session===undefined, which is never true —
+  // meaning simulated data appeared to save (no error shown) but was
+  // never actually written anywhere a real load would find it. Confirmed
+  // directly: after calling this, the correct partition key never
+  // existed in storage at all, only the bogus undefined-undefined one.
+  const res = await saveAllLocalPartitions();
   if(res===false) toast(`Simulated ${SESSIONS[sessionNum].label} but the save didn't sync — check connection and try again`);
   else toast(`Simulated ${SESSIONS[sessionNum].label} — 5 evaluators × ${n} athletes`);
   renderCoachLog(); renderSnapshot(); renderLiveTotals();
@@ -1392,15 +1475,18 @@ async function runSimulationAllSessions(){
   const btn = document.getElementById('simRunAllBtn');
   if(btn){ btn.disabled = true; btn.textContent = 'Simulating…'; }
   // Generate all 7 days' data in memory first, then write it ONCE at the end
-  // rather than once per day. Seven back-to-back writes to the same key in
-  // under two seconds is exactly the kind of burst that can trip a backend
-  // write-rate limit or hit a transient network hiccup — this removes that
-  // risk entirely instead of hoping each of seven rapid saves succeeds.
+  // rather than once per day. Seven back-to-back writes in under two
+  // seconds is exactly the kind of burst that can trip lock contention on
+  // the backend — batching this into one pass avoids hoping each of
+  // seven rapid saves lands.
   Object.keys(SESSIONS).forEach(key=> generateSimulatedDay(parseInt(key)));
-  let ok = await saveEntries();
+  // Was calling saveEntries() with no arguments — same bug as
+  // runSimulation, see its comment. saveAllLocalPartitions correctly
+  // saves every day+station partition this just generated data for.
+  let ok = await saveAllLocalPartitions();
   if(!ok){
     await new Promise(r=>setTimeout(r, 800));
-    ok = await saveEntries(); // one retry — covers a transient failure
+    ok = await saveAllLocalPartitions(); // one retry — covers a transient failure
   }
   if(btn){ btn.disabled = false; btn.textContent = 'Simulate All 7 Days'; }
   if(ok) toast(`Simulated all 7 days for ${(roster.filter(a=>a.pinny).length || ROSTER.length)} athletes`);
@@ -3096,6 +3182,14 @@ async function backgroundSync(){
     partitionsToPoll = allPartitionKeys();
   }
   try{
+    // Batched into ONE request when polling every partition (coach/other
+    // views) — this is the high-frequency case (every 8 seconds, from
+    // potentially several coach/sign-in tablets at once), so this is where
+    // batching matters most for backend load, not just boot time. The
+    // single-partition evaluator case stays as a plain cloudGet — no
+    // benefit to batching just one key.
+    const useBatch = partitionsToPoll.length > 1;
+    const batchResult = useBatch ? await cloudGetBatch(partitionsToPoll.map(p=>p.key)) : null;
     // Collect each partition's result WITHOUT touching the shared
     // `entries` array inside these parallel tasks — combining happens
     // once, after every fetch resolves. Reassigning `entries` per-
@@ -3104,8 +3198,20 @@ async function backgroundSync(){
     const results = await Promise.all(partitionsToPoll.map(async (p)=>{
       const tokenAtStart = entriesResetTokens[p.key];
       try{
-        const res = await cloudGet(p.key);
-        const raw = res && res.value ? JSON.parse(res.value) : [];
+        let rawValue;
+        if(useBatch){
+          // A null batchResult means the WHOLE request failed — treat
+          // every partition as failed too, same as each one's own catch
+          // block already did individually. Don't fall back to firing
+          // off 42 separate requests right after a failed batch; that
+          // would defeat the entire point of batching in the first place.
+          if(batchResult === null) throw new Error('batch fetch failed');
+          rawValue = batchResult[p.key];
+        } else {
+          const res = await cloudGet(p.key);
+          rawValue = res ? res.value : null;
+        }
+        const raw = rawValue ? JSON.parse(rawValue) : [];
         const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
         if(entriesResetTokens[p.key] !== tokenAtStart){
           // A reset happened locally for this partition while this fetch

@@ -242,7 +242,7 @@
 <div class="app">
 
   <div class="versionBanner" id="versionBanner">
-    <span>⚠ A newer version of this app is available. Reload now — using an outdated tab can silently overwrite other tablets' data.</span>
+    <span id="versionBannerText">⚠ A newer version is available — this tab will reload automatically in <span id="versionCountdown">10</span>s to keep your entries saving correctly.</span>
     <button id="versionReloadBtn">Reload Now</button>
   </div>
 
@@ -2051,6 +2051,20 @@ async function backgroundPollRoster(){
         // yet (roster just went from empty to populated).
         if(document.getElementById('checkinTableWrap')) renderCheckinTable();
         else renderCheckinMain();
+      } else if(state.viewMode==='coach'){
+        // Names shown in Station Results, Full Log, and Athlete Snapshot
+        // all come from this same roster via nameForPinny() — a roster
+        // change (an athlete's name corrected, a walk-on added, a pinnie
+        // reassigned) needs to reach those views too, not just Sign-In.
+        // Confirmed as a real gap: a Coach Dashboard tablet left open
+        // could show pinnies and times correctly (from the entries poll)
+        // while names sat frozen at whatever the roster looked like when
+        // that table was last drawn, with nothing to ever redraw it.
+        renderCoachLog(); renderSnapshot();
+        if(document.getElementById('stationResultsWrap')) renderStationResultsTable();
+      } else if(state.viewMode==='selection'){
+        if(document.getElementById('selectionTableWrap')) renderSelectionTable();
+        else renderSelectionMain();
       }
     }
     updateSyncStatus('live');
@@ -3171,7 +3185,17 @@ async function backgroundSync(){
       await Promise.all(partitionsNeedingPushback.map(r=> saveEntries(r.day, r.suffix)));
     }
     if(anyChanged){
-      if(state.viewMode==='coach'){ renderCoachLog(); renderSnapshot(); renderLiveTotals(); }
+      if(state.viewMode==='coach'){
+        renderCoachLog(); renderSnapshot(); renderLiveTotals();
+        // Station Results was never wired into this refresh — it only
+        // ever redrew when the user touched its own day/station/sort
+        // controls directly, so it could sit showing a stale snapshot
+        // indefinitely while new entries kept arriving correctly in the
+        // background. Confirmed as a real gap: entries and roster data
+        // were both current, but a table rendered before either finished
+        // updating had no trigger to ever redraw itself afterward.
+        if(document.getElementById('stationResultsWrap')) renderStationResultsTable();
+      }
       else if(state.viewMode==='evaluator'){ renderLog(); }
     }
     updateSyncStatus('live');
@@ -3191,6 +3215,33 @@ setInterval(backgroundSync, 8000);
 
 document.getElementById('dateTag').textContent = new Date().toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
 loadEvaluatorName();
+// Shows the banner AND auto-reloads shortly after, rather than waiting
+// indefinitely for someone to notice and click Reload Now. This matters
+// more than it might look: because cloudSet's write mode can't read the
+// backend's response (see its own comment above), a stale device whose
+// writes get silently rejected by the version gate would otherwise show
+// normal "Logged!" toasts all session while nothing actually saves —
+// with no error, no warning, nothing to prompt anyone to act. A short,
+// visible countdown gives a moment to notice mid-tap, but reloads
+// automatically either way rather than depending on a device nobody's
+// personally checking on.
+let autoReloadScheduled = false;
+function scheduleAutoReload(){
+  if(autoReloadScheduled) return; // don't restart the countdown on every poll
+  autoReloadScheduled = true;
+  const banner = document.getElementById('versionBanner');
+  if(banner) banner.classList.add('show');
+  let secondsLeft = 10;
+  const countdownEl = document.getElementById('versionCountdown');
+  const tick = setInterval(()=>{
+    secondsLeft--;
+    if(countdownEl) countdownEl.textContent = secondsLeft;
+    if(secondsLeft <= 0){
+      clearInterval(tick);
+      window.location.reload();
+    }
+  }, 1000);
+}
 async function checkForNewVersion(){
   try{
     // Cache-busting query param + no-store: without both, some browsers
@@ -3200,15 +3251,18 @@ async function checkForNewVersion(){
     const text = await res.text();
     const match = text.match(/const APP_VERSION = '([^']+)'/);
     if(match && match[1] !== APP_VERSION){
-      const banner = document.getElementById('versionBanner');
-      if(banner) banner.classList.add('show');
+      scheduleAutoReload();
     }
   }catch(e){
     // Offline or blocked — not worth surfacing an error for a background
     // check; it'll just try again next interval.
   }
 }
-setInterval(checkForNewVersion, 120000);
+// Checked every 45 seconds rather than every 2 minutes — given a stale
+// device's own writes are silently discarded rather than merely risking
+// conflict with others, catching this quickly matters more than it did
+// before that backend protection existed.
+setInterval(checkForNewVersion, 45000);
 const versionReloadBtn = document.getElementById('versionReloadBtn');
 if(versionReloadBtn) versionReloadBtn.onclick = ()=> window.location.reload();
 Promise.all([

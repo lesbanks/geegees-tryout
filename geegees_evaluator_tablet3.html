@@ -1768,7 +1768,10 @@ function renderCoachDashboard(){
   const typeOptions = ['all','Station','Scrimmage +/-','FIQ','TCS'];
   if(!coachFilters.resultsDay) coachFilters.resultsDay = SESSIONS[1].label;
   if(!coachFilters.resultsStation) coachFilters.resultsStation = 'S1';
-  let html = `<details class="card"><summary>Test Tools (dry-run before tryout day)</summary>
+  let html = `<div class="card" style="background:#FAF8F4;padding:10px 14px;margin-bottom:10px">
+    <span id="rosterDiagLine" style="font-size:11px;color:var(--grey);font-family:ui-monospace,monospace">${rosterDiagText()}</span>
+  </div>
+  <details class="card"><summary>Test Tools (dry-run before tryout day)</summary>
     <p class="focus" style="margin-top:8px">Simulates every currently-registered athlete (falls back to the 27-person seed roster if nobody's registered yet). Entries use evaluators EV1–EV5 (one per station) plus EV-SCRIM for scrimmage/TCS, so they're easy to spot and clear before the real thing.</p>
     <div class="filterbar">
       <select id="simSession">` +
@@ -1965,6 +1968,49 @@ let roster = [];
 let rosterSyncing = false;
 // See decisionsWriteChain above — same reasoning, same fix.
 let rosterWriteChain = Promise.resolve();
+// ---------------------------------------------------------------
+// ON-SCREEN DIAGNOSTICS — a visible readout of roster sync health,
+// so someone on a tablet with no keyboard/right-click (no DevTools
+// access at all) can just read what's on screen and report it back,
+// rather than needing a Network tab or Console. Deliberately an
+// ISOLATED fetch, completely separate from cloudGet/backgroundPollRoster
+// — this only ever reads and records status, never touches `roster`
+// or any of the real sync/merge logic, so it carries zero risk to the
+// tested data path even if something about the diagnostic itself is
+// ever wrong.
+// ---------------------------------------------------------------
+let rosterDiag = { lastCheckTime: null, status: 'not yet checked', httpStatus: null };
+async function runRosterDiagnostic(){
+  const checkTime = new Date().toISOString();
+  try{
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), 8000);
+    const res = await fetch(`${BACKEND_URL}?key=${encodeURIComponent(CHECKIN_KEY)}`, { cache: 'no-store', signal: controller.signal });
+    clearTimeout(timer);
+    rosterDiag.lastCheckTime = checkTime;
+    rosterDiag.httpStatus = res.status;
+    if(!res.ok){ rosterDiag.status = 'http-error'; return; }
+    let data;
+    try{ data = await res.json(); }
+    catch(parseErr){ rosterDiag.status = 'bad-response-format'; return; }
+    rosterDiag.status = (data && data.value) ? 'ok' : 'ok-empty';
+  }catch(e){
+    rosterDiag.lastCheckTime = checkTime;
+    rosterDiag.httpStatus = null;
+    rosterDiag.status = e && e.name==='AbortError' ? 'timeout' : 'network-error';
+  }
+  if(state.viewMode==='coach' && document.getElementById('rosterDiagLine')) renderRosterDiagLine();
+}
+function rosterDiagText(){
+  const t = rosterDiag.lastCheckTime ? new Date(rosterDiag.lastCheckTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+  return `Roster in memory: ${roster.length} athletes · Last check: ${t} · Result: ${rosterDiag.status}${rosterDiag.httpStatus!==null?' (HTTP '+rosterDiag.httpStatus+')':''} · App version: ${APP_VERSION}`;
+}
+function renderRosterDiagLine(){
+  const el = document.getElementById('rosterDiagLine');
+  if(el) el.textContent = rosterDiagText();
+}
+setInterval(runRosterDiagnostic, 6000);
+runRosterDiagnostic();
 state.checkinSearch = '';
 state.checkinShowLoader = true;
 state.checkinUnpaidOnly = false;

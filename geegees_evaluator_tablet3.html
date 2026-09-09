@@ -1744,7 +1744,9 @@ function stationResultsTableHtml(){
 }
 function renderStationResultsTable(){
   const wrap = document.getElementById('stationResultsWrap');
-  if(wrap) wrap.innerHTML = stationResultsTableHtml();
+  if(!wrap) return;
+  try{ wrap.innerHTML = stationResultsTableHtml(); }
+  catch(e){ wrap.innerHTML = `<p class="empty">Couldn't display results: ${escapeHtml(e && e.message ? e.message : String(e))}</p>`; }
 }
 function exportStationResultsCsv(){
   const { columns, rows } = computeStationResults(coachFilters.resultsDay, coachFilters.resultsStation);
@@ -1883,7 +1885,7 @@ function renderSnapshot(){
   let pinny = raw;
   let displayName = nameForPinny(raw);
   if(!/^\d+$/.test(raw)){
-    const matches = roster.filter(r=> r.name.toLowerCase().includes(raw.toLowerCase()));
+    const matches = roster.filter(r=> (r.name||'').toLowerCase().includes(raw.toLowerCase()));
     if(matches.length===0){ el.innerHTML = '<p class="empty">No athlete matches that name.</p>'; return; }
     if(matches.length>1){
       el.innerHTML = `<p class="focus" style="margin:0 0 8px 0">${matches.length} athletes match "${raw}" — tap the one you mean.</p>
@@ -2256,7 +2258,7 @@ async function addWalkOn(name, year, positions, pinnyRaw){
   }
   let added = true;
   await withFreshRoster(current=>{
-    if(current.some(a=>a.name.trim().toLowerCase()===name.toLowerCase())){
+    if(current.some(a=>(a.name||'').trim().toLowerCase()===name.toLowerCase())){
       toast(`${name} is already on the roster`); added = false; return current;
     }
     if(pinny!==null){
@@ -2278,7 +2280,7 @@ async function loadOrUpdateRoster(text){
   if(!parsed.length){ toast('No rows found — check the pasted text'); return; }
   let paidStatusesSet = 0;
   await withFreshRoster(current=>{
-    const byName = new Map(current.map(a=>[a.name.trim().toLowerCase(), a]));
+    const byName = new Map(current.map(a=>[(a.name||'').trim().toLowerCase(), a]));
     parsed.forEach(p=>{
       const key = p.name.trim().toLowerCase();
       const paidVal = interpretPaid(p.paidRaw);
@@ -2438,7 +2440,7 @@ async function simulateRegistration(){
   const seedRows = ROSTER.map(a=>({listNum:a.num, name:a.name, year:a.year, pos:a.pos})).concat(walkins);
 
   await withFreshRoster(current=>{
-    const byName = new Map(current.map(a=>[a.name.trim().toLowerCase(), a]));
+    const byName = new Map(current.map(a=>[(a.name||'').trim().toLowerCase(), a]));
     seedRows.forEach(p=>{
       const key = p.name.trim().toLowerCase();
       if(byName.has(key)){
@@ -2520,9 +2522,18 @@ function exportCheckinCsv(){
 function filteredRoster(){
   const q = state.checkinSearch.trim().toLowerCase();
   let list = roster.slice();
-  if(q) list = list.filter(a=> a.name.toLowerCase().includes(q) || String(a.pinny||'').includes(q) || String(a.listNum).includes(q));
+  // (a.name||'') everywhere below: a single athlete record with a
+  // missing/non-string name would otherwise throw here (toLowerCase /
+  // localeCompare on undefined), aborting this ENTIRE function — which
+  // silently blanks the whole Sign-In roster table, even though every
+  // OTHER athlete's data is completely fine. Confirmed as the likely
+  // real cause of a report where the on-screen diagnostic showed the
+  // full roster correctly loaded in memory while Sign-In displayed
+  // nothing at all — exactly the signature of an uncaught exception
+  // partway through rendering, not missing or corrupted data.
+  if(q) list = list.filter(a=> (a.name||'').toLowerCase().includes(q) || String(a.pinny||'').includes(q) || String(a.listNum).includes(q));
   if(state.checkinUnpaidOnly) list = list.filter(a=> !a.paid);
-  return list.sort((a,b)=> a.name.localeCompare(b.name));
+  return list.sort((a,b)=> (a.name||'').localeCompare(b.name||''));
 }
 function checkinTableHtml(list, day){
   let html = `<div style="overflow-x:auto"><table class="roster"><thead><tr>
@@ -2604,14 +2615,19 @@ function wireCheckinTableRows(){
 // value attribute is correct — the DOM node is a brand new element).
 function renderCheckinTable(){
   const day = SESSIONS[state.session].label;
-  const list = filteredRoster();
   const wrap = document.getElementById('checkinTableWrap');
-  if(wrap) wrap.innerHTML = checkinTableHtml(list, day);
-  const bulkBtn = document.getElementById('bulkCheckinBtn');
-  if(bulkBtn) bulkBtn.textContent = `Check In All Visible (${list.filter(a=>!(a.attendance && a.attendance[day] && a.attendance[day].na)).length})`;
-  wireCheckinTableRows();
+  if(!wrap) return;
+  try{
+    const list = filteredRoster();
+    wrap.innerHTML = checkinTableHtml(list, day);
+    const bulkBtn = document.getElementById('bulkCheckinBtn');
+    if(bulkBtn) bulkBtn.textContent = `Check In All Visible (${list.filter(a=>!(a.attendance && a.attendance[day] && a.attendance[day].na)).length})`;
+    wireCheckinTableRows();
+  }catch(e){
+    wrap.innerHTML = `<p class="empty">Couldn't display the roster: ${escapeHtml(e && e.message ? e.message : String(e))}</p>`;
+  }
 }
-function renderCheckinMain(){
+function renderCheckinMainImpl(){
   const main = document.getElementById('mainArea');
   const day = SESSIONS[state.session].label;
   const dayName = SESSIONS[state.session].name;
@@ -2703,6 +2719,22 @@ function renderCheckinMain(){
   document.getElementById('clearDayBtn').onclick = clearTodayCheckins;
   document.getElementById('resetRosterBtn').onclick = resetRosterEverything;
   wireCheckinTableRows();
+}
+// Wraps renderCheckinMainImpl so a render exception (like the
+// filteredRoster name-sort bug this was built to catch) shows up as a
+// clear on-screen message instead of silently leaving the whole
+// Sign-In view blank — this is what's actually called everywhere else
+// in the file, including recursively from within the impl above.
+function renderCheckinMain(){
+  const main = document.getElementById('mainArea');
+  try{ renderCheckinMainImpl(); }
+  catch(e){
+    if(main) main.innerHTML = `<div class="card" style="border-color:var(--flag)">
+      <h2>Something went wrong rendering Sign-In &amp; Pinnies</h2>
+      <p class="focus">${escapeHtml(e && e.message ? e.message : String(e))}</p>
+      <p class="focus">This is a bug, not lost data — your synced roster is still safe (${roster.length} athletes in memory). Please report this exact message.</p>
+    </div>`;
+  }
 }
 
 /* ---------------------------------------------------------------
@@ -2928,7 +2960,7 @@ function distinctPositions(){
 function filteredSelection(){
   const q = state.selectionSearch.trim().toLowerCase();
   let list = selectionRoster();
-  if(q) list = list.filter(a=> a.name.toLowerCase().includes(q) || String(a.pinny).includes(q) || (a.pos||'').toLowerCase().includes(q));
+  if(q) list = list.filter(a=> (a.name||'').toLowerCase().includes(q) || String(a.pinny).includes(q) || (a.pos||'').toLowerCase().includes(q));
   if(state.selectionStatusFilter==='undecided') list = list.filter(a=>!a.status);
   else if(state.selectionStatusFilter!=='all') list = list.filter(a=>a.status===state.selectionStatusFilter);
   if(state.selectionPositionFilter!=='all'){
@@ -2936,8 +2968,8 @@ function filteredSelection(){
     list = list.filter(a=> (a.pos||'').toLowerCase().split(',').some(p=>p.trim()===pf));
   }
   const sortFns = {
-    name: (a,b)=> a.name.localeCompare(b.name),
-    position: (a,b)=> (a.pos||'').localeCompare(b.pos||'') || a.name.localeCompare(b.name),
+    name: (a,b)=> (a.name||'').localeCompare(b.name||''),
+    position: (a,b)=> (a.pos||'').localeCompare(b.pos||'') || (a.name||'').localeCompare(b.name||''),
     skill: (a,b)=> (b.metrics.skillAvg||-999) - (a.metrics.skillAvg||-999),
     compete: (a,b)=> b.metrics.compete - a.metrics.compete,
     tcs: (a,b)=> (b.metrics.tcsAvg||-999) - (a.metrics.tcsAvg||-999)
@@ -2950,7 +2982,7 @@ function addToCompareByQuery(query){
   const all = selectionRoster();
   let matches = /^\d+$/.test(q)
     ? all.filter(a=> String(a.pinny)===q)
-    : all.filter(a=> a.name.toLowerCase().includes(q));
+    : all.filter(a=> (a.name||'').toLowerCase().includes(q));
   if(matches.length===0){ state.compareMatches = []; toast('No athlete matches that search'); renderSelectionMain(); return; }
   if(matches.length>1){
     state.compareMatches = matches.map(a=>({pinny:a.pinny, name:a.name, pos:a.pos}));
@@ -3035,10 +3067,15 @@ function wireSelectionTableRows(){
 // Table-only refresh, same reasoning as renderCheckinTable — rebuilding the
 // search <input> itself via a full re-render drops focus on every keystroke.
 function renderSelectionTable(){
-  const list = filteredSelection();
   const wrap = document.getElementById('selectionTableWrap');
-  if(wrap) wrap.innerHTML = selectionTableHtml(list);
-  wireSelectionTableRows();
+  if(!wrap) return;
+  try{
+    const list = filteredSelection();
+    wrap.innerHTML = selectionTableHtml(list);
+    wireSelectionTableRows();
+  }catch(e){
+    wrap.innerHTML = `<p class="empty">Couldn't display this table: ${escapeHtml(e && e.message ? e.message : String(e))}</p>`;
+  }
 }
 function renderSelectionMain(){
   const main = document.getElementById('mainArea');
@@ -3158,6 +3195,26 @@ function renderSelectionMain(){
   wireSelectionTableRows();
 }
 
+// A render exception here previously meant the affected view silently
+// stayed blank or frozen with nothing on screen — exactly what happened
+// with the filteredRoster() name-sort bug above: `roster` itself was
+// correctly loaded (51 athletes, confirmed via the diagnostic line),
+// but rendering it threw partway through, leaving Sign-In showing
+// nothing with no visible indication anything had gone wrong. This
+// turns any future render exception into a plainly visible on-screen
+// message instead of a silent blank page, without needing DevTools to
+// ever find out something broke.
+function safeRender(renderFn, label){
+  try{ renderFn(); }
+  catch(e){
+    const main = document.getElementById('mainArea');
+    if(main) main.innerHTML = `<div class="card" style="border-color:var(--flag)">
+      <h2>Something went wrong rendering ${label}</h2>
+      <p class="focus">${escapeHtml(e && e.message ? e.message : String(e))}</p>
+      <p class="focus">This is a bug, not lost data — your synced information is still safe. Please report this exact message.</p>
+    </div>`;
+  }
+}
 function renderAll(){
   const stationTabsEl = document.getElementById('stationTabs');
   const idRowEl = document.getElementById('idRow');
@@ -3165,21 +3222,21 @@ function renderAll(){
     stationTabsEl.style.display='none';
     idRowEl.style.display='none';
     document.getElementById('sessionTabs').innerHTML='';
-    renderCoachDashboard();
+    safeRender(renderCoachDashboard, 'the Head Coach Dashboard');
     return;
   }
   if(state.viewMode==='checkin'){
     stationTabsEl.style.display='none';
     idRowEl.style.display='none';
     renderSessionTabs();
-    renderCheckinMain();
+    safeRender(renderCheckinMain, 'Sign-In & Pinnies');
     return;
   }
   if(state.viewMode==='selection'){
     stationTabsEl.style.display='none';
     idRowEl.style.display='none';
     document.getElementById('sessionTabs').innerHTML='';
-    renderSelectionMain();
+    safeRender(renderSelectionMain, 'Team Selection');
     return;
   }
   stationTabsEl.style.display='';

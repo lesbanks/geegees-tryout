@@ -749,29 +749,55 @@ async function loadEntries(){
       const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);
       const localForPartition = entries.filter(e=>e.session===p.day && partitionSuffix(e)===p.suffix);
       const priorToken = entriesResetTokens[p.key] !== undefined ? entriesResetTokens[p.key] : null;
-      let mergedForPartition, newDeletedIds;
+      let mergedForPartition, newDeletedIds, wasReset;
       if(resetToken !== priorToken){
         mergedForPartition = fresh;
         newDeletedIds = deletedIds;
+        wasReset = true;
       } else {
         newDeletedIds = mergeDeletedIds(deletedEntryIdsByDay[p.key], deletedIds);
         mergedForPartition = mergeEntriesById(localForPartition, fresh, newDeletedIds);
+        wasReset = false;
       }
-      return { key: p.key, day: p.day, suffix: p.suffix, resetToken, deletedIds: newDeletedIds, list: mergedForPartition };
+      return { key: p.key, day: p.day, suffix: p.suffix, resetToken, deletedIds: newDeletedIds, list: mergedForPartition, wasReset };
     }catch(e){
-      return { key: p.key, day: p.day, suffix: p.suffix, resetToken: entriesResetTokens[p.key], deletedIds: deletedEntryIdsByDay[p.key], list: entries.filter(x=>x.session===p.day && partitionSuffix(x)===p.suffix) };
+      return { key: p.key, day: p.day, suffix: p.suffix, resetToken: entriesResetTokens[p.key], deletedIds: deletedEntryIdsByDay[p.key], list: entries.filter(x=>x.session===p.day && partitionSuffix(x)===p.suffix), wasReset:false };
     }
   }));
   // Combined once, after every parallel fetch finishes — reassigning
   // `entries` inside the per-partition loop above (while other
   // partitions' fetches are still in flight) would let whichever one
   // resolves last overwrite what an earlier-resolving partition had just
-  // contributed.
+  // contributed. Re-merging against the CURRENT `entries` here too (not
+  // just concatenating r.list) protects against a fast evaluator logging
+  // a rep before this initial load has finished — same class of race as
+  // backgroundSync's, fixed the same way. Skipped when a reset happened
+  // (wasReset) — there, `fresh` must win outright; re-merging against
+  // whatever's still sitting locally would resurrect pre-reset data that
+  // the reset was specifically meant to clear.
   let combined = [];
   results.forEach(r=>{
     entriesResetTokens[r.key] = r.resetToken;
-    deletedEntryIdsByDay[r.key] = r.deletedIds;
-    combined = combined.concat(r.list);
+    if(r.wasReset){
+      // A genuine reset clears tombstones too (see clearAllEntries) — the
+      // backend's (empty) list should win outright here, same reasoning
+      // as adopting `fresh` outright below.
+      deletedEntryIdsByDay[r.key] = r.deletedIds;
+      combined = combined.concat(r.list);
+      return;
+    }
+    // Merge with whatever tombstones are CURRENTLY recorded, not a blind
+    // overwrite — a delete's tombstone can be added to deletedEntryIdsByDay
+    // synchronously while THIS partition's poll is still in flight (its
+    // own r.deletedIds was computed from an earlier snapshot), and
+    // overwriting rather than merging would silently erase that tombstone,
+    // letting the deleted entry resurrect on the next sync. Confirmed
+    // directly under concurrent load: a mid-session delete's tombstone
+    // vanished this way even though the delete itself briefly succeeded.
+    deletedEntryIdsByDay[r.key] = mergeDeletedIds(deletedEntryIdsByDay[r.key], r.deletedIds);
+    const currentForPartition = entries.filter(e=>e.session===r.day && partitionSuffix(e)===r.suffix);
+    const finalForPartition = mergeEntriesById(currentForPartition, r.list, deletedEntryIdsByDay[r.key]);
+    combined = combined.concat(finalForPartition);
   });
   entries = combined;
   renderLog();
@@ -3075,24 +3101,35 @@ async function backgroundSync(){
           return { key:p.key, day:p.day, suffix:p.suffix, skip:true };
         }
         const localForPartition = entries.filter(e=>e.session===p.day && partitionSuffix(e)===p.suffix);
-        let mergedForPartition, newDeletedIds, localHadExtra, changed;
-        if(resetToken !== entriesResetTokens[p.key]){
+        // Normalize undefined -> null before comparing: entriesResetTokens[p.key]
+        // is undefined the very first time this partition is ever synced
+        // (nothing set it yet), and a brand-new/empty backend key's token
+        // is null (see parseEntriesPayload). Comparing resetToken !== undefined
+        // directly is ALWAYS true even when both effectively mean "no reset
+        // has happened," misclassifying every partition's first-ever sync
+        // as "a reset just happened" — which then discards whatever a
+        // concurrent save just pushed to that same new partition. Confirmed
+        // directly: a brand-new station's very first logged rep was lost
+        // this way when a coach-view poll landed around the same moment.
+        const priorTokenForCompare = entriesResetTokens[p.key] !== undefined ? entriesResetTokens[p.key] : null;
+        let mergedForPartition, newDeletedIds, changed, wasReset;
+        if(resetToken !== priorTokenForCompare){
           // A clear happened somewhere since we last synced this
           // partition — adopt the fresh (smaller) data directly rather
           // than merging our own stale local copy back in and undoing
           // the clear.
           mergedForPartition = fresh;
           newDeletedIds = deletedIds;
-          localHadExtra = false;
           changed = JSON.stringify(mergedForPartition) !== JSON.stringify(localForPartition);
+          wasReset = true;
         } else {
           // MERGE, never overwrite — union by id, respecting tombstones.
           newDeletedIds = mergeDeletedIds(deletedEntryIdsByDay[p.key], deletedIds);
           mergedForPartition = mergeEntriesById(localForPartition, fresh, newDeletedIds);
           changed = mergedForPartition.length !== localForPartition.length;
-          localHadExtra = mergedForPartition.length !== fresh.length;
+          wasReset = false;
         }
-        return { key:p.key, day:p.day, suffix:p.suffix, skip:false, resetToken, deletedIds:newDeletedIds, list:mergedForPartition, localHadExtra, changed };
+        return { key:p.key, day:p.day, suffix:p.suffix, skip:false, resetToken, deletedIds:newDeletedIds, list:mergedForPartition, freshCount:fresh.length, changed, wasReset };
       }catch(e){ return { key:p.key, day:p.day, suffix:p.suffix, skip:true }; }
     }));
     let anyChanged = false;
@@ -3101,10 +3138,30 @@ async function backgroundSync(){
     results.forEach(r=>{
       if(r.skip) return;
       entriesResetTokens[r.key] = r.resetToken;
-      deletedEntryIdsByDay[r.key] = r.deletedIds;
-      combined = combined.filter(e=>!(e.session===r.day && partitionSuffix(e)===r.suffix)).concat(r.list);
-      if(r.changed) anyChanged = true;
-      if(r.localHadExtra) partitionsNeedingPushback.push(r);
+      if(r.wasReset){
+        // A genuine reset clears tombstones too — the backend's (empty)
+        // list wins outright, same reasoning as adopting `fresh` outright.
+        deletedEntryIdsByDay[r.key] = r.deletedIds;
+        combined = combined.filter(e=>!(e.session===r.day && partitionSuffix(e)===r.suffix)).concat(r.list);
+        if(r.changed) anyChanged = true;
+        if(r.list.length !== r.freshCount) partitionsNeedingPushback.push(r);
+        return;
+      }
+      // Merge with whatever tombstones are CURRENTLY recorded, not a
+      // blind overwrite — a delete's tombstone can be added synchronously
+      // while THIS partition's poll is still in flight (r.deletedIds was
+      // computed from an earlier snapshot), and overwriting rather than
+      // merging would silently erase that tombstone, letting the deleted
+      // entry resurrect on the next sync. Confirmed directly under
+      // concurrent load: a mid-session delete's tombstone vanished this
+      // way even though the delete itself briefly succeeded.
+      deletedEntryIdsByDay[r.key] = mergeDeletedIds(deletedEntryIdsByDay[r.key], r.deletedIds);
+      const currentForPartition = combined.filter(e=>e.session===r.day && partitionSuffix(e)===r.suffix);
+      const others = combined.filter(e=>!(e.session===r.day && partitionSuffix(e)===r.suffix));
+      const finalForPartition = mergeEntriesById(currentForPartition, r.list, deletedEntryIdsByDay[r.key]);
+      combined = others.concat(finalForPartition);
+      if(finalForPartition.length !== currentForPartition.length || r.changed) anyChanged = true;
+      if(finalForPartition.length !== r.freshCount) partitionsNeedingPushback.push(r);
     });
     entries = combined;
     if(partitionsNeedingPushback.length){

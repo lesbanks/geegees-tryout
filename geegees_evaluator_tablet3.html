@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r2';
+const APP_VERSION = '2026-09-10-r3';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -397,23 +397,17 @@ const SESSIONS = {
         {id:"catch",label:"Catch at break point",type:"yn"}
       ]},
       {name:"2v2 Mirror Coverage + Blitz Rec.", tag:"ROUTE", setup:"2 WR vs 2 DB + blitzer from 7yd. QB must read & throw hot.", fields:[
-        {id:"rre",type:"route",routes:["Rep 1","Rep 2","Rep 3","Rep 4"]},
+        {id:"rre",type:"route",routes:["Rep 1","Rep 2","Rep 3","Rep 4","Rep 5","Rep 6"]},
         {id:"winloss",label:"Rep result",type:"choice",options:["Win","Loss"]},
         {id:"hotread",label:"QB recognized blitz / threw hot",type:"yn"}
       ]},
-      {name:"Over-the-Shoulder Tracking", tag:"CATCH", setup:"5 deep balls thrown 30-40yd; mark in-stride only if no gather step.", fields:[
-        {id:"catches",label:"Catches",type:"num",unit:"/5",min:0,max:5,step:1},
-        {id:"instride",label:"In-stride catches",type:"num",unit:"/5",min:0,max:5,step:1}
-      ]},
-      {name:"DB 1-on-1 Press / Blitz Recognition", tag:"DB/BLITZ", setup:"5 releases vs press. Blitzers react to run/pass read.", fields:[
-        {id:"role",label:"Role this rep",type:"choice",options:["DB","Blitzer"]},
-        {id:"coveragewin",label:"Coverage win (DB — no catch or PBU)",type:"yn"},
-        {id:"correctread",label:"Correct read (Blitzer)",type:"yn"},
-        {id:"falsestart",label:"False start (Blitzer)",type:"yn"}
-      ]},
-      {name:"Sweep Pursuit", tag:"PURSUIT", setup:"Carrier runs parallel to sideline; defender must force back inside.", fields:[
-        {id:"flags",label:"Flags",type:"num",unit:"/5",min:0,max:5,step:1},
-        {id:"forcedinside",label:"Forced inside",type:"yn"}
+      {name:"Combined: DB Press/Blitzer Rush + Over-Shoulder Track", tag:"DB/BLITZ", setup:"Two groups (Red/White) share this station, swapping Offense/Defense after 2 reps each. Zone 1 (start end): WR releases vs DB press (5yd off) + Blitzer rush (7yd), works toward the far end. Zone 2 (far end, opposite side): coach throws a deep ball for an over-the-shoulder catch as the WR works back toward the start.", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["WR","DB","Blitzer"]},
+        {id:"coveragewin",label:"Coverage win — no catch or PBU (DB, Zone 1)",type:"yn"},
+        {id:"sack",label:"Sack (Blitzer, Zone 1)",type:"yn"},
+        {id:"pressure",label:"Pressure (Blitzer, Zone 1)",type:"yn"},
+        {id:"penalty",label:"Penalty (Blitzer, Zone 1)",type:"yn"},
+        {id:"catch",label:"Over-the-shoulder catch (WR, Zone 2)",type:"yn"}
       ]}
     ]},
   4:{label:"D4", name:"Explosiveness", scrimmage:true,
@@ -3338,6 +3332,7 @@ state.newGroupName = '';
 state.selectedGroupId = '';    // evaluator-side quick-picker filter
 state.groupFilterTouched = false; // has the evaluator ever explicitly changed the filter (including choosing "No filter") — distinguishes "never set yet, safe to auto-default" from "deliberately set to no filter, must not override"
 state.unassignedTargetGroupId = ''; // which group a tap in the Unassigned list adds to
+state.selectedSide = ''; // '', 'offense', or 'defense' — which side the currently-selected group is playing THIS rep, since the same group can swap sides mid-station (see Day 3 Station 3's Red/White swap).
 
 function parseGroupsPayload(raw){
   if(raw && typeof raw === 'object' && !Array.isArray(raw)){
@@ -3721,6 +3716,18 @@ function renderGroupsMain(){
 // pinny input in Station Entry and Scrimmage. Purely a faster way to
 // set the same state.values._athlete the number input already sets;
 // changes nothing about how a logged entry is structured or saved.
+// Returns this station's "Role this rep" field definition if it has one,
+// else null — used to auto-fill role from the Offense/Defense toggle
+// below when the mapping is unambiguous (every role option across the
+// app is either "WR" (offense) or "DB"/"Blitzer" (defense) — confirmed
+// directly against every station that defines a role field).
+function currentStationRoleField(){
+  if(state.mode !== 'station') return null;
+  const sess = SESSIONS[state.session];
+  if(!sess || !sess.stations.length) return null;
+  const st = sess.stations[state.station];
+  return (st.fields||[]).find(f => f.id === 'role' && f.type === 'choice') || null;
+}
 function groupPickerHtml(){
   if(!groupList.length) return '';
   // Defaults to the first group (alphabetically, matching the dropdown's
@@ -3739,6 +3746,15 @@ function groupPickerHtml(){
       `<option value="${g.id}" ${state.selectedGroupId===g.id?'selected':''}>${escapeHtml(g.name)}</option>`
     ).join('') + `</select></div>`;
   if(state.selectedGroupId && groupById(state.selectedGroupId)){
+    // Many stations put two groups on the field at once, one on each
+    // side, and which group plays which side can swap mid-station (e.g.
+    // Day 3 Station 3's Red/White swap every 2 reps) — so this is a
+    // per-rep indicator of what the SELECTED group is doing right now,
+    // not a fixed property of the group itself.
+    html += `<div class="btnrow" style="margin:0 0 10px 0">
+      <button class="pill ${state.selectedSide==='offense'?'scale-sel':''}" data-side="offense">Watching: Offense</button>
+      <button class="pill ${state.selectedSide==='defense'?'scale-sel':''}" data-side="defense">Watching: Defense</button>
+    </div>`;
     const members = groupMembers(state.selectedGroupId);
     html += `<div class="grouppickerstrip">` + (members.length
       ? members.map(a=>
@@ -3754,6 +3770,25 @@ function wireGroupPicker(){
   if(sel) sel.onchange = (e)=>{ state.selectedGroupId = e.target.value; state.groupFilterTouched = true; renderCurrentForm(); };
   document.querySelectorAll('[data-grouppick]').forEach(b=>{
     b.onclick = ()=>{ state.values._athlete = parseInt(b.dataset.grouppick); renderCurrentForm(); };
+  });
+  document.querySelectorAll('[data-side]').forEach(b=>{
+    b.onclick = ()=>{
+      state.selectedSide = b.dataset.side;
+      const roleField = currentStationRoleField();
+      if(roleField){
+        if(state.selectedSide==='offense' && roleField.options.includes('WR')){
+          // "WR" is the only offensive role option anywhere in the app,
+          // so this is safe to fill in directly.
+          state.values[roleField.id] = 'WR';
+        } else if(state.selectedSide==='defense' && state.values[roleField.id]==='WR'){
+          // Defense maps to two possible roles (DB or Blitzer) — can't
+          // auto-pick between them, but clear a stale "WR" selection
+          // left over from switching sides so it isn't silently wrong.
+          state.values[roleField.id] = undefined;
+        }
+      }
+      renderCurrentForm();
+    };
   });
 }
 

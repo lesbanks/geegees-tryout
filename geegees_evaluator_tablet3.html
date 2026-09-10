@@ -1771,7 +1771,8 @@ function renderCoachDashboard(){
   if(!coachFilters.resultsDay) coachFilters.resultsDay = SESSIONS[1].label;
   if(!coachFilters.resultsStation) coachFilters.resultsStation = 'S1';
   let html = `<div class="card" style="background:#FAF8F4;padding:10px 14px;margin-bottom:10px">
-    <span id="rosterDiagLine" style="font-size:11px;color:var(--grey);font-family:ui-monospace,monospace">${rosterDiagText()}</span>
+    <span id="rosterDiagLine" style="font-size:11px;color:var(--grey);font-family:ui-monospace,monospace;display:block">${rosterDiagText()}</span>
+    <span id="entriesDiagLine" style="font-size:11px;color:var(--grey);font-family:ui-monospace,monospace;display:block;margin-top:4px">${entriesDiagText()}</span>
   </div>
   <details class="card"><summary>Test Tools (dry-run before tryout day)</summary>
     <p class="focus" style="margin-top:8px">Simulates every currently-registered athlete (falls back to the 27-person seed roster if nobody's registered yet). Entries use evaluators EV1–EV5 (one per station) plus EV-SCRIM for scrimmage/TCS, so they're easy to spot and clear before the real thing.</p>
@@ -2013,6 +2014,65 @@ function renderRosterDiagLine(){
 }
 setInterval(runRosterDiagnostic, 6000);
 runRosterDiagnostic();
+// ---------------------------------------------------------------
+// Same isolated-diagnostic pattern as runRosterDiagnostic, but for
+// the ENTRIES batch fetch specifically — reports, per day, how many
+// entries actually came back from an independent raw fetch (not from
+// `entries` in memory, which could be stale or affected by a merge/
+// render bug elsewhere). This is what will pin down whether a "day's
+// data isn't showing" report is a genuine backend gap for that day,
+// or something going wrong after the fetch succeeds.
+// ---------------------------------------------------------------
+let entriesDiag = { lastCheckTime: null, status: 'not yet checked', httpStatus: null, perDay: {} };
+async function runEntriesDiagnostic(){
+  const checkTime = new Date().toISOString();
+  const partitions = allPartitionKeys();
+  try{
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), 8000);
+    const keysParam = partitions.map(p=>encodeURIComponent(p.key)).join(',');
+    const res = await fetch(`${BACKEND_URL}?keys=${keysParam}`, { cache: 'no-store', signal: controller.signal });
+    clearTimeout(timer);
+    entriesDiag.lastCheckTime = checkTime;
+    entriesDiag.httpStatus = res.status;
+    if(!res.ok){ entriesDiag.status = 'http-error'; return; }
+    let data;
+    try{ data = await res.json(); }
+    catch(parseErr){ entriesDiag.status = 'bad-response-format'; return; }
+    const values = (data && data.values) || {};
+    const perDay = {};
+    allDayLabels().forEach(d=> perDay[d]=0);
+    partitions.forEach(p=>{
+      const raw = values[p.key];
+      if(!raw) return;
+      try{
+        const parsed = JSON.parse(raw);
+        const list = Array.isArray(parsed) ? parsed : (parsed.entries||[]);
+        perDay[p.day] = (perDay[p.day]||0) + list.length;
+      }catch(e){ /* leave as 0 for this partition */ }
+    });
+    entriesDiag.perDay = perDay;
+    entriesDiag.status = 'ok';
+  }catch(e){
+    entriesDiag.lastCheckTime = checkTime;
+    entriesDiag.httpStatus = null;
+    entriesDiag.status = e && e.name==='AbortError' ? 'timeout' : 'network-error';
+  }
+  if(state.viewMode==='coach' && document.getElementById('entriesDiagLine')) renderEntriesDiagLine();
+}
+function entriesDiagText(){
+  const t = entriesDiag.lastCheckTime ? new Date(entriesDiag.lastCheckTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+  const perDayStr = Object.keys(entriesDiag.perDay).length
+    ? Object.entries(entriesDiag.perDay).map(([d,n])=>`${d}:${n}`).join(' ')
+    : '(none yet)';
+  return `Backend entries (direct fetch, independent of what's rendered): ${perDayStr} · Last check: ${t} · Result: ${entriesDiag.status}${entriesDiag.httpStatus!==null?' (HTTP '+entriesDiag.httpStatus+')':''}`;
+}
+function renderEntriesDiagLine(){
+  const el = document.getElementById('entriesDiagLine');
+  if(el) el.textContent = entriesDiagText();
+}
+setInterval(runEntriesDiagnostic, 15000);
+runEntriesDiagnostic();
 state.checkinSearch = '';
 state.checkinShowLoader = true;
 state.checkinUnpaidOnly = false;

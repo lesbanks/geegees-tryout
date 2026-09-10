@@ -2012,7 +2012,7 @@ let rosterWriteChain = Promise.resolve();
 // so someone on a tablet with no keyboard/right-click (no DevTools
 // access at all) can just read what's on screen and report it back,
 // rather than needing a Network tab or Console. Deliberately an
-// ISOLATED fetch, completely separate from cloudGet/backgroundPollRoster
+// ISOLATED fetch, completely separate from cloudGet/backgroundPollSharedState
 // — this only ever reads and records status, never touches `roster`
 // or any of the real sync/merge logic, so it carries zero risk to the
 // tested data path even if something about the diagnostic itself is
@@ -2248,27 +2248,30 @@ function mergeRoster(local, fresh){
   });
   return Array.from(byListNum.values());
 }
-async function backgroundPollRoster(){
+// Processes an already-fetched roster value (used by the combined
+// shared-state poll below) rather than fetching CHECKIN_KEY itself —
+// this is what lets roster, decisions, and groups all be checked in
+// ONE network request instead of three separate ones every cycle.
+// Purely synchronous now that the fetch has already happened elsewhere;
+// still checks/sets rosterSyncing so an in-progress reset (which sets
+// this flag itself, see resetRosterEverything) is still respected.
+function processRosterPollResult(rawValue){
   if(rosterSyncing) return; rosterSyncing = true;
-  // Captured before the fetch — if a reset happens locally WHILE this
-  // fetch is in flight, rosterResetToken will have moved on by the time
-  // we're ready to apply this poll's result, which means this result is
-  // now stale relative to something more recent we already know about.
-  // Without this check, the poll's own "does my fetched token differ
-  // from the current one" comparison gets it backwards in that exact
-  // case — it concludes someone else made a newer change and adopts its
-  // (actually stale, pre-reset) data directly, overwriting the correctly
-  // reset state. Confirmed directly: forcing a poll to start just before
-  // a reset reproduced this 20/20 times.
+  // Captured before parsing — if a reset happens locally WHILE this
+  // value is being processed, rosterResetToken will have moved on by
+  // the time we're ready to apply it, which means this result is now
+  // stale relative to something more recent we already know about.
+  // Without this check, the "does my fetched token differ from the
+  // current one" comparison gets it backwards in that exact case — it
+  // concludes someone else made a newer change and adopts its (actually
+  // stale, pre-reset) data directly, overwriting the correctly reset
+  // state. Confirmed directly: forcing this to run just before a reset
+  // reproduced this 20/20 times.
   const tokenAtStart = rosterResetToken;
   try{
-    const res = await cloudGet(CHECKIN_KEY);
-    const raw = res && res.value ? JSON.parse(res.value) : [];
+    const raw = rawValue ? JSON.parse(rawValue) : [];
     const parsed = parseRosterPayload(raw);
-    if(rosterResetToken !== tokenAtStart){
-      rosterSyncing = false;
-      return;
-    }
+    if(rosterResetToken !== tokenAtStart){ rosterSyncing = false; return; }
     const merged = (parsed.resetToken !== rosterResetToken) ? parsed.list : mergeRoster(roster, parsed.list);
     const changed = JSON.stringify(merged) !== JSON.stringify(roster);
     rosterResetToken = parsed.resetToken;
@@ -2295,13 +2298,21 @@ async function backgroundPollRoster(){
       } else if(state.viewMode==='selection'){
         if(document.getElementById('selectionTableWrap')) renderSelectionTable();
         else renderSelectionMain();
+      } else if(state.viewMode==='groups'){
+        // Group member lists are a join of groupAssignments with this
+        // same roster (see groupMembers/unassignedRosterAthletes) — a
+        // roster change (or roster simply finishing its own load after
+        // Groups already rendered once against an empty roster) needs to
+        // redraw this view too, or member names sit stuck at whatever
+        // roster looked like on Groups' last render. Same class of gap
+        // as the Coach Dashboard fix above, just never extended to this
+        // view since it didn't exist yet when that fix was made.
+        renderGroupsMain();
       }
     }
-    updateSyncStatus('live');
-  }catch(e){ updateSyncStatus('offline'); }
+  }catch(e){ /* leave roster as-is; the combined poller reports connectivity separately */ }
   rosterSyncing = false;
 }
-setInterval(backgroundPollRoster, 6000);
 
 function wireWalkOnInputs(){
   document.getElementById('walkOnName').oninput = (e)=>{ state.walkOnName = e.target.value; };
@@ -2576,8 +2587,8 @@ async function simulateRegistration(){
 }
 async function resetRosterEverything(){
   if(!await customConfirm('Reset ALL sign-in data? This permanently deletes the entire roster, every pinnie assignment, all check-in/payment history, and every Team Selection decision. This cannot be undone.')) return;
-  rosterSyncing = true; // hold off both background polls so neither can
-  decisionsSyncing = true; // merge the about-to-be-cleared data back in
+  rosterSyncing = true; // hold off the combined background poll's roster/
+  decisionsSyncing = true; // decisions legs so neither can merge the
   roster = [];
   decisions = {};
   rosterResetToken = uid(); // signal to every other open tab/device that
@@ -2957,20 +2968,19 @@ function mergeDecisions(local, fresh){
   });
   return merged;
 }
-async function backgroundPollDecisions(){
+// Same refactor as processRosterPollResult — processes an already-
+// fetched value instead of calling cloudGet itself, so it can be one
+// leg of the combined shared-state poll.
+function processDecisionsPollResult(rawValue){
   if(decisionsSyncing) return; decisionsSyncing = true;
-  // Same reasoning as backgroundPollRoster — a reset happening locally
-  // while this fetch is in flight would otherwise make this poll adopt
+  // Same reasoning as processRosterPollResult — a reset happening
+  // locally while this value is being processed would otherwise adopt
   // its own now-stale pre-reset result.
   const tokenAtStart = decisionsResetToken;
   try{
-    const res = await cloudGet(DECISIONS_KEY);
-    const raw = res && res.value ? JSON.parse(res.value) : {};
+    const raw = rawValue ? JSON.parse(rawValue) : {};
     const parsed = parseDecisionsPayload(raw);
-    if(decisionsResetToken !== tokenAtStart){
-      decisionsSyncing = false;
-      return;
-    }
+    if(decisionsResetToken !== tokenAtStart){ decisionsSyncing = false; return; }
     const merged = (parsed.resetToken !== decisionsResetToken) ? parsed.obj : mergeDecisions(decisions, parsed.obj);
     const changed = JSON.stringify(merged) !== JSON.stringify(decisions);
     decisionsResetToken = parsed.resetToken;
@@ -2981,11 +2991,9 @@ async function backgroundPollDecisions(){
         else renderSelectionMain();
       }
     }
-    updateSyncStatus('live');
-  }catch(e){ updateSyncStatus('offline'); }
+  }catch(e){ /* leave decisions as-is; the combined poller reports connectivity separately */ }
   decisionsSyncing = false;
 }
-setInterval(backgroundPollDecisions, 6000);
 
 async function assignDecision(pinny, status){
   const athlete = roster.find(r=>r.pinny===pinny);
@@ -3425,12 +3433,12 @@ async function loadGroupsFromCloud(){
     groupsResetToken = parsed.resetToken;
   }catch(e){ groupList = []; groupAssignments = {}; }
 }
-async function backgroundPollGroups(){
+// Same refactor as processRosterPollResult/processDecisionsPollResult.
+function processGroupsPollResult(rawValue){
   if(groupsSyncing) return; groupsSyncing = true;
   const tokenAtStart = groupsResetToken;
   try{
-    const res = await cloudGet(GROUPS_KEY);
-    const raw = res && res.value ? JSON.parse(res.value) : {};
+    const raw = rawValue ? JSON.parse(rawValue) : {};
     const parsed = parseGroupsPayload(raw);
     if(groupsResetToken !== tokenAtStart){ groupsSyncing = false; return; }
     let mergedList, mergedAssignments;
@@ -3450,11 +3458,38 @@ async function backgroundPollGroups(){
       if(state.viewMode==='groups') renderGroupsMain();
       else if(state.viewMode==='evaluator') renderCurrentForm();
     }
-    updateSyncStatus('live');
-  }catch(e){ updateSyncStatus('offline'); }
+  }catch(e){ /* leave groups as-is; the combined poller reports connectivity separately */ }
   groupsSyncing = false;
 }
-setInterval(backgroundPollGroups, 6000);
+
+// ---------------------------------------------------------------
+// COMBINED SHARED-STATE POLL — roster, decisions, and groups each used
+// to poll independently every 6s, each firing its own cloudGet request.
+// With up to 7 tablets doing this simultaneously, that's several times
+// more full-sheet reads on the backend than necessary, since Apps
+// Script re-reads the entire sheet per request and doesn't reliably run
+// many simultaneous invocations of the same script in true parallel.
+// Folding all three into ONE cloudGetBatch call — the same batching
+// mechanism entries already uses — cuts most tablets from up to 4
+// requests per cycle down to 1, without changing any of the per-key
+// reset-token/merge/re-render logic above, which is untouched.
+// ---------------------------------------------------------------
+let sharedStatePollInFlight = false;
+async function backgroundPollSharedState(){
+  if(sharedStatePollInFlight) return; sharedStatePollInFlight = true;
+  try{
+    const batch = await cloudGetBatch([CHECKIN_KEY, DECISIONS_KEY, GROUPS_KEY]);
+    if(batch === null) throw new Error('shared batch fetch failed');
+    processRosterPollResult(batch[CHECKIN_KEY]);
+    processDecisionsPollResult(batch[DECISIONS_KEY]);
+    processGroupsPollResult(batch[GROUPS_KEY]);
+    updateSyncStatus('live');
+  }catch(e){
+    updateSyncStatus('offline');
+  }
+  sharedStatePollInFlight = false;
+}
+setInterval(backgroundPollSharedState, 6000);
 
 function groupById(id){ return groupList.find(g=>g.id===id) || null; }
 // A group's own existence can be deleted out from under a pinny's

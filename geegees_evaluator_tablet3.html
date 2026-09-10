@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r3';
+const APP_VERSION = '2026-09-10-r4';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -592,6 +592,37 @@ async function cloudGet(key){
     const data = await res.json();
     return (data && data.value !== undefined && data.value !== null) ? { value: data.value } : null;
   }catch(e){ return null; }
+}
+// cloudGet's return of `null` is ambiguous — it means EITHER "this key
+// genuinely has no value" OR "the fetch itself failed" (timeout, network
+// error, non-ok response), and callers can't tell which happened. That's
+// harmless for a background poll (it just skips that cycle), but it's
+// dangerous for any caller that fetches "the current state" before
+// merging a change into it: if a failure is mistaken for "genuinely
+// empty," a mutator that matches existing records (like re-pasting an
+// updated roster and matching by name) treats every existing record as
+// brand new, wiping fields the mutator doesn't itself set — confirmed
+// directly as the real cause of a live incident: a transient timeout
+// during a normal roster re-paste (right after a backend redeploy, when
+// Apps Script can be briefly slow) silently emptied the roster's local
+// view of itself, so every already-registered athlete got recreated
+// from scratch, losing pinny numbers and attendance history that the
+// paste was never supposed to touch. Used by withFreshRoster/
+// withFreshDecisions/withFreshGroups and their boot-time loadXFromCloud
+// counterparts specifically because those are the "fetch current state
+// before merging a change" call sites; cloudGet itself is left
+// unchanged since its other callers (background polls, diagnostics)
+// already treat a failure and a genuine empty the same way safely.
+async function cloudGetSafe(key){
+  try{
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), 8000);
+    const res = await fetch(`${BACKEND_URL}?key=${encodeURIComponent(key)}`, { signal: controller.signal, cache: 'no-store' });
+    clearTimeout(timer);
+    if(!res.ok) return { ok: false };
+    const data = await res.json();
+    return { ok: true, value: (data && data.value !== undefined) ? data.value : null };
+  }catch(e){ return { ok: false }; }
 }
 // Fetches many keys in ONE request instead of one request per key — the
 // real fix for slow loading, not just a smaller symptom of it. Loading
@@ -2173,8 +2204,9 @@ async function withFreshRoster(mutator){
     let current, fetchedToken;
     const tokenAtStart = rosterResetToken;
     try{
-      const res = await cloudGet(CHECKIN_KEY);
-      const raw = res && res.value ? JSON.parse(res.value) : [];
+      const safe = await cloudGetSafe(CHECKIN_KEY);
+      if(!safe.ok) throw new Error('roster fetch failed');
+      const raw = safe.value ? JSON.parse(safe.value) : [];
       const parsed = parseRosterPayload(raw);
       current = parsed.list; fetchedToken = parsed.resetToken;
     }catch(e){ current = roster.slice(); fetchedToken = rosterResetToken; }
@@ -2213,12 +2245,15 @@ async function withFreshRoster(mutator){
 }
 async function loadRosterFromCloud(){
   try{
-    const res = await cloudGet(CHECKIN_KEY);
-    const raw = res && res.value ? JSON.parse(res.value) : [];
+    const safe = await cloudGetSafe(CHECKIN_KEY);
+    if(!safe.ok) throw new Error('roster fetch failed');
+    const raw = safe.value ? JSON.parse(safe.value) : [];
     const parsed = parseRosterPayload(raw);
     roster = (parsed.resetToken !== rosterResetToken) ? parsed.list : mergeRoster(roster, parsed.list);
     rosterResetToken = parsed.resetToken;
-  }catch(e){ roster = []; }
+  }catch(e){ /* leave roster as whatever's already in memory — this only
+    runs empty in practice at boot (nothing to lose yet); preserving
+    it rather than forcing [] protects any future caller too. */ }
 }
 // Same reasoning as mergeDecisions — never blindly overwrite. Roster
 // records don't have one single "last modified" field, so this derives
@@ -2904,8 +2939,9 @@ async function withFreshDecisions(mutator){
     let current, fetchedToken;
     const tokenAtStart = decisionsResetToken;
     try{
-      const res = await cloudGet(DECISIONS_KEY);
-      const raw = res && res.value ? JSON.parse(res.value) : {};
+      const safe = await cloudGetSafe(DECISIONS_KEY);
+      if(!safe.ok) throw new Error('decisions fetch failed');
+      const raw = safe.value ? JSON.parse(safe.value) : {};
       const parsed = parseDecisionsPayload(raw);
       current = parsed.obj; fetchedToken = parsed.resetToken;
     }catch(e){ current = {...decisions}; fetchedToken = decisionsResetToken; }
@@ -2949,12 +2985,13 @@ async function withFreshDecisions(mutator){
 }
 async function loadDecisionsFromCloud(){
   try{
-    const res = await cloudGet(DECISIONS_KEY);
-    const raw = res && res.value ? JSON.parse(res.value) : {};
+    const safe = await cloudGetSafe(DECISIONS_KEY);
+    if(!safe.ok) throw new Error('decisions fetch failed');
+    const raw = safe.value ? JSON.parse(safe.value) : {};
     const parsed = parseDecisionsPayload(raw);
     decisions = (parsed.resetToken !== decisionsResetToken) ? parsed.obj : mergeDecisions(decisions, parsed.obj);
     decisionsResetToken = parsed.resetToken;
-  }catch(e){ decisions = {}; }
+  }catch(e){ /* leave decisions as whatever's already in memory — same reasoning as loadRosterFromCloud's catch block. */ }
 }
 // Merges by pinny, never blindly overwrites: for each athlete present on
 // either side, keeps whichever decision is actually more recent
@@ -3393,8 +3430,9 @@ async function withFreshGroups(mutator){
     let currentList, currentAssignments, fetchedToken, fetchedDeleted;
     const tokenAtStart = groupsResetToken;
     try{
-      const res = await cloudGet(GROUPS_KEY);
-      const raw = res && res.value ? JSON.parse(res.value) : {};
+      const safe = await cloudGetSafe(GROUPS_KEY);
+      if(!safe.ok) throw new Error('groups fetch failed');
+      const raw = safe.value ? JSON.parse(safe.value) : {};
       const parsed = parseGroupsPayload(raw);
       currentList = parsed.list; currentAssignments = parsed.assignments;
       fetchedToken = parsed.resetToken; fetchedDeleted = parsed.deletedIds;
@@ -3430,8 +3468,9 @@ async function withFreshGroups(mutator){
 }
 async function loadGroupsFromCloud(){
   try{
-    const res = await cloudGet(GROUPS_KEY);
-    const raw = res && res.value ? JSON.parse(res.value) : {};
+    const safe = await cloudGetSafe(GROUPS_KEY);
+    if(!safe.ok) throw new Error('groups fetch failed');
+    const raw = safe.value ? JSON.parse(safe.value) : {};
     const parsed = parseGroupsPayload(raw);
     if(parsed.resetToken !== groupsResetToken){
       groupList = parsed.list; groupAssignments = parsed.assignments; deletedGroupIds = parsed.deletedIds;
@@ -3441,7 +3480,7 @@ async function loadGroupsFromCloud(){
       groupAssignments = mergeGroupAssignments(groupAssignments, parsed.assignments);
     }
     groupsResetToken = parsed.resetToken;
-  }catch(e){ groupList = []; groupAssignments = {}; }
+  }catch(e){ /* leave groups as whatever's already in memory — same reasoning as loadRosterFromCloud's catch block. */ }
 }
 // Same refactor as processRosterPollResult/processDecisionsPollResult.
 function processGroupsPollResult(rawValue){

@@ -3314,6 +3314,7 @@ state.groupSearchQuery = {};   // per-group-id search text for "add athlete"
 state.groupSearchMatches = {}; // per-group-id current match list
 state.newGroupName = '';
 state.selectedGroupId = '';    // evaluator-side quick-picker filter
+state.unassignedTargetGroupId = ''; // which group a tap in the Unassigned list adds to
 
 function parseGroupsPayload(raw){
   if(raw && typeof raw === 'object' && !Array.isArray(raw)){
@@ -3598,12 +3599,31 @@ function renderGroupsMain(){
     });
   }
 
+  // Defaults to the first group (or clears back to nothing if that
+  // group was deleted) — so a coach doesn't have to touch the dropdown
+  // at all when there's only one group in play, which is the common
+  // case right after creating the first team.
+  const sortedGroups = groupList.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  if(state.unassignedTargetGroupId && !groupById(state.unassignedTargetGroupId)) state.unassignedTargetGroupId = '';
+  if(!state.unassignedTargetGroupId && sortedGroups.length) state.unassignedTargetGroupId = sortedGroups[0].id;
+
   const unassigned = unassignedRosterAthletes();
   html += `<div class="groupunassigned">
-    <span class="groupcount">Unassigned (${unassigned.length})</span>
+    <div class="groupcard-head" style="margin-bottom:0">
+      <span class="groupcount">Unassigned (${unassigned.length})</span>`;
+  if(sortedGroups.length){
+    html += `<select id="unassignedTargetSelect" style="flex:0 0 auto;padding:6px 8px;border-radius:8px;border:1.5px solid var(--line);font-size:12px">` +
+      sortedGroups.map(g=>`<option value="${g.id}" ${state.unassignedTargetGroupId===g.id?'selected':''}>Tap adds to: ${escapeHtml(g.name)}</option>`).join('') +
+      `</select>`;
+  }
+  html += `</div>
     <div class="chips">` + (unassigned.length
-      ? unassigned.map(a=>`<span class="chip">#${a.pinny} ${escapeHtml(a.name)}</span>`).join('')
+      ? unassigned.map(a=> sortedGroups.length
+          ? `<button class="chip" style="cursor:pointer;border:1px solid var(--line)" data-quickadd="${a.pinny}">#${a.pinny} ${escapeHtml(a.name)}</button>`
+          : `<span class="chip">#${a.pinny} ${escapeHtml(a.name)}</span>`
+        ).join('')
       : `<span class="empty">Everyone checked in has a group.</span>`) + `</div>
+    ${!sortedGroups.length ? '<p class="focus" style="margin:8px 0 0 0">Create a group above, then tap a name here to add them to it.</p>' : ''}
   </div>`;
 
   main.innerHTML = html;
@@ -3634,6 +3654,14 @@ function renderGroupsMain(){
       assignAthleteToGroup(parseInt(b.dataset.pinny), gid);
       state.groupSearchQuery[gid] = ''; state.groupSearchMatches[gid] = [];
       renderGroupsMain();
+    };
+  });
+  const targetSelect = document.getElementById('unassignedTargetSelect');
+  if(targetSelect) targetSelect.onchange = (e)=>{ state.unassignedTargetGroupId = e.target.value; renderGroupsMain(); };
+  document.querySelectorAll('[data-quickadd]').forEach(b=>{
+    b.onclick = ()=>{
+      if(!state.unassignedTargetGroupId) return;
+      assignAthleteToGroup(parseInt(b.dataset.quickadd), state.unassignedTargetGroupId);
     };
   });
 }

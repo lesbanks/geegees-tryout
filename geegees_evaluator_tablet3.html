@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r1';
+const APP_VERSION = '2026-09-10-r2';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -2586,26 +2586,40 @@ async function simulateRegistration(){
   renderCheckinMain();
 }
 async function resetRosterEverything(){
-  if(!await customConfirm('Reset ALL sign-in data? This permanently deletes the entire roster, every pinnie assignment, all check-in/payment history, and every Team Selection decision. This cannot be undone.')) return;
+  if(!await customConfirm('Reset ALL sign-in data? This permanently deletes the entire roster, every pinnie assignment, all check-in/payment history, every Team Selection decision, and every Group and its assignments. This cannot be undone.')) return;
   rosterSyncing = true; // hold off the combined background poll's roster/
-  decisionsSyncing = true; // decisions legs so neither can merge the
+  decisionsSyncing = true; // decisions/
+  groupsSyncing = true; // groups legs so none of them can merge the
+  // about-to-be-cleared data back in. Groups added here after a confirmed
+  // real gap: this reset previously left groupList/groupAssignments
+  // completely untouched, so any pinny number reused by a real athlete
+  // after a reset (very likely, since pinny assignment always starts
+  // from #1) would silently inherit whatever group a same-numbered
+  // athlete from earlier test/simulation data had been assigned to.
+  // Confirmed directly: a "Test Group" assigned to pinny #1 during
+  // simulated registration was still showing that pinny's real,
+  // post-reset athlete as a member, with no visible indication anything
+  // was wrong.
   roster = [];
   decisions = {};
+  groupList = []; groupAssignments = {}; deletedGroupIds = [];
   rosterResetToken = uid(); // signal to every other open tab/device that
   decisionsResetToken = uid(); // this is intentional, not data loss to undo —
-  // same reasoning as clearAllEntries's reset token.
+  groupsResetToken = uid(); // same reasoning as clearAllEntries's reset token.
   state.checkinShowLoader = true;
   renderCheckinMain();
   try{
     const res1 = await storageSet(CHECKIN_KEY, JSON.stringify({ resetToken: rosterResetToken, roster: [] }), true);
     const res2 = await storageSet(DECISIONS_KEY, JSON.stringify({ resetToken: decisionsResetToken, decisions: {} }), true);
-    if(!res1 || !res2){ toast('Reset did not fully sync — check connection and try again'); }
-    else toast('Roster, pinnies, check-ins, and team decisions all cleared');
+    const res3 = await storageSet(GROUPS_KEY, JSON.stringify({ resetToken: groupsResetToken, groupList: [], assignments: {}, deletedIds: [] }), true);
+    if(!res1 || !res2 || !res3){ toast('Reset did not fully sync — check connection and try again'); }
+    else toast('Roster, pinnies, check-ins, team decisions, and groups all cleared');
   }catch(e){
     toast('Reset did not sync — check connection and try again');
   }
   rosterSyncing = false;
   decisionsSyncing = false;
+  groupsSyncing = false;
 }
 function exportCheckinCsv(){
   const dayKeys = Object.values(SESSIONS).map(s=>s.label);

@@ -147,8 +147,8 @@
   .synctag{font-size:10.5px;color:var(--grey);margin-top:6px;}
   .day6{font-size:13px;color:var(--grey);line-height:1.5;padding:6px 2px;}
 
-  .modeToggle{display:flex;gap:6px;margin-bottom:10px;}
-  .modebtn{flex:1;padding:9px;border-radius:9px;border:1px solid rgba(255,255,255,.35);
+  .modeToggle{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;}
+  .modebtn{flex:1 1 130px;padding:9px;border-radius:9px;border:1px solid rgba(255,255,255,.35);
     background:rgba(255,255,255,.10);color:rgba(255,255,255,.85);font-size:13px;font-weight:700;cursor:pointer;}
   .modebtn.active{background:#fff;color:var(--garnet-dark);border-color:#fff;}
 
@@ -236,6 +236,37 @@
   .poscheck input{width:17px;height:17px;}
   textarea.comparenote{width:100%;min-height:50px;margin-top:8px;padding:8px;border-radius:8px;
     border:1.5px solid var(--line);font-size:12px;font-family:inherit;resize:vertical;background:#fff;}
+
+  /* GROUPS */
+  .groupcard{border:1.5px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px;background:#FAF8F4;}
+  .groupcard-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;}
+  input.groupnameinput{flex:1;min-width:120px;font-size:15px;font-weight:800;color:var(--garnet-dark);
+    border:1.5px solid transparent;background:transparent;padding:6px 8px;border-radius:8px;}
+  input.groupnameinput:focus{border-color:var(--line);background:#fff;}
+  .groupcount{font-size:11.5px;color:var(--grey);font-weight:700;white-space:nowrap;}
+  .groupmembers{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;min-height:32px;}
+  .groupmemberchip{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid var(--line);
+    border-radius:999px;padding:6px 6px 6px 12px;font-size:12.5px;font-weight:700;color:var(--ink);}
+  .groupmemberchip button{background:none;border:none;color:var(--grey);cursor:pointer;font-size:14px;
+    padding:2px 6px;line-height:1;}
+  .groupmembers .empty{font-size:12px;color:var(--grey);padding:6px 2px;}
+  .groupaddrow{display:flex;gap:8px;margin-bottom:8px;}
+  .groupaddrow input{flex:1;padding:9px 10px;border-radius:9px;border:1.5px solid var(--line);font-size:13px;}
+  .groupdelbtn{background:none;border:none;color:var(--grey);font-size:16px;cursor:pointer;padding:4px 6px;}
+  .groupunassigned{background:#FBF3E7;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px;}
+  .groupunassigned .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+  .groupunassigned .chip{background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 12px;
+    font-size:12.5px;font-weight:700;color:var(--ink);}
+
+  /* GROUP PICKER (evaluator quick-select) */
+  .grouppickerwrap{margin-bottom:16px;}
+  .grouppickerstrip{display:flex;overflow-x:auto;gap:8px;padding:4px 2px 8px 2px;scrollbar-width:none;}
+  .grouppickerstrip::-webkit-scrollbar{display:none;}
+  .grouppill{flex:0 0 auto;padding:10px 14px;border-radius:10px;border:1.5px solid var(--line);background:#fff;
+    font-size:13px;font-weight:700;color:var(--ink);cursor:pointer;white-space:nowrap;}
+  .grouppill .pn{color:var(--grey);font-weight:700;margin-right:5px;}
+  .grouppill.sel{background:var(--garnet);border-color:var(--garnet-dark);color:#fff;}
+  .grouppill.sel .pn{color:rgba(255,255,255,.75);}
 </style>
 </head>
 <body>
@@ -256,6 +287,7 @@
       <button id="modeCoach" class="modebtn">Head Coach — Dashboard</button>
       <button id="modeCheckin" class="modebtn">Sign-In &amp; Pinnies</button>
       <button id="modeSelection" class="modebtn">Team Selection</button>
+      <button id="modeGroups" class="modebtn">Groups</button>
     </div>
     <div class="id-row" id="idRow">
       <input id="evalName" placeholder="Your initials" maxlength="6">
@@ -997,6 +1029,7 @@ function renderStationForm(){
   const st = sess.stations[state.station];
   let html = `<div class="card"><h2>${sess.label}${st.code} — ${st.name}</h2>`;
   if(st.setup) html += `<p class="focus">${st.setup}</p>`;
+  html += groupPickerHtml();
   html += `<div class="field"><label>Athlete # (pinnie)</label>
     <div class="numctl">
       <button data-act="dec" data-id="_athlete" data-step="1">−</button>
@@ -1026,6 +1059,7 @@ function renderStationForm(){
     <button class="logbtn" id="logBtn">Log Rep — Athlete #${state.values._athlete || '—'}</button>`;
   main.innerHTML = html;
   attachFieldListeners();
+  wireGroupPicker();
   document.getElementById('logBtn').onclick = logStationEntry;
 }
 function attachFieldListeners(){
@@ -1080,6 +1114,7 @@ function renderScrimmage(){
   let html = `<div class="card">
     <h2>Live Scrimmage — Athlete #${state.values._athlete||'—'}</h2>
     <p class="focus">Tap the athlete number below, then log each event as it happens. Score resets when you log a new athlete number.</p>
+    ${groupPickerHtml()}
     <div class="field"><label>Athlete # (pinnie)</label>
       <div class="numctl">
         <button data-act="dec" data-id="_athlete" data-step="1">−</button>
@@ -1155,6 +1190,7 @@ function renderScrimmage(){
   });
   const logBtn = document.getElementById('logScrimBtn');
   if(logBtn) logBtn.onclick = logTcsEntry;
+  wireGroupPicker();
 }
 
 /* ---------------------------------------------------------------
@@ -3255,6 +3291,384 @@ function renderSelectionMain(){
   wireSelectionTableRows();
 }
 
+/* ---------------------------------------------------------------
+   GROUPS — flexible scrimmage/tryout teams. A coach creates any
+   number of named groups and assigns checked-in, pinnied athletes
+   to them (one group per athlete at a time). Evaluators can then
+   filter Station Entry / Scrimmage by group to quickly tap an
+   athlete instead of typing a pinny number — built for scrimmage
+   days where only a handful of athletes are up at once.
+   Same shared-storage architecture as roster/decisions: reset
+   token for intentional clears, tombstones for deleted groups,
+   last-write-wins merge per group and per assignment so concurrent
+   edits from different tablets never silently stomp each other.
+---------------------------------------------------------------- */
+const GROUPS_KEY = 'geegees-tryout-groups';
+let groupList = [];          // [{id, name, updatedAt}, ...]
+let groupAssignments = {};   // { [pinny]: {groupId, assignedAt} }
+let deletedGroupIds = [];    // tombstones — same reasoning as deletedEntryIdsByDay
+let groupsResetToken = null;
+let groupsSyncing = false;
+let groupsWriteChain = Promise.resolve();
+state.groupSearchQuery = {};   // per-group-id search text for "add athlete"
+state.groupSearchMatches = {}; // per-group-id current match list
+state.newGroupName = '';
+state.selectedGroupId = '';    // evaluator-side quick-picker filter
+
+function parseGroupsPayload(raw){
+  if(raw && typeof raw === 'object' && !Array.isArray(raw)){
+    return {
+      resetToken: raw.resetToken || null,
+      list: Array.isArray(raw.groupList) ? raw.groupList : [],
+      assignments: (raw.assignments && typeof raw.assignments === 'object') ? raw.assignments : {},
+      deletedIds: Array.isArray(raw.deletedIds) ? raw.deletedIds : []
+    };
+  }
+  return { resetToken: null, list: [], assignments: {}, deletedIds: [] };
+}
+// Merge by id, keeping whichever side's group record is more recent
+// (updatedAt) — same last-write-wins shape as mergeRoster, plus
+// tombstone filtering so a deleted group can't resurrect via a stale
+// device's merge, same reasoning as mergeEntriesById.
+function mergeGroupList(local, fresh, deletedIds){
+  const dead = new Set(deletedIds || []);
+  const map = new Map();
+  fresh.forEach(g=>{ if(g && g.id && !dead.has(g.id)) map.set(g.id, g); });
+  local.forEach(g=>{
+    if(!g || !g.id || dead.has(g.id)) return;
+    const f = map.get(g.id);
+    if(!f){ map.set(g.id, g); return; }
+    const lt = g.updatedAt ? new Date(g.updatedAt).getTime() : 0;
+    const ft = f.updatedAt ? new Date(f.updatedAt).getTime() : 0;
+    map.set(g.id, lt >= ft ? g : f);
+  });
+  return Array.from(map.values());
+}
+// Merge by pinny, keeping whichever assignment is more recent —
+// identical reasoning to mergeDecisions. Removing someone from a group
+// is represented as {groupId:null, assignedAt:now}, never by deleting
+// the key, so the removal itself has a timestamp that can win a merge.
+function mergeGroupAssignments(local, fresh){
+  const merged = {...fresh};
+  Object.keys(local).forEach(pinny=>{
+    const l = local[pinny], f = fresh[pinny];
+    if(!f){ merged[pinny] = l; return; }
+    const lt = l && l.assignedAt ? new Date(l.assignedAt).getTime() : 0;
+    const ft = f && f.assignedAt ? new Date(f.assignedAt).getTime() : 0;
+    merged[pinny] = lt >= ft ? l : f;
+  });
+  return merged;
+}
+async function withFreshGroups(mutator){
+  // OPTIMISTIC PASS — see withFreshRoster for the full reasoning.
+  try{
+    const result = mutator({ list: groupList.slice(), assignments: {...groupAssignments} }) || {};
+    if(result.list) groupList = result.list;
+    if(result.assignments) groupAssignments = result.assignments;
+  }catch(e){}
+  renderGroupsMain();
+
+  // AUTHORITATIVE PASS — queued, fetch-fresh-then-merge, same pattern
+  // as withFreshRoster/withFreshDecisions.
+  groupsWriteChain = groupsWriteChain.then(async ()=>{
+    let currentList, currentAssignments, fetchedToken, fetchedDeleted;
+    const tokenAtStart = groupsResetToken;
+    try{
+      const res = await cloudGet(GROUPS_KEY);
+      const raw = res && res.value ? JSON.parse(res.value) : {};
+      const parsed = parseGroupsPayload(raw);
+      currentList = parsed.list; currentAssignments = parsed.assignments;
+      fetchedToken = parsed.resetToken; fetchedDeleted = parsed.deletedIds;
+    }catch(e){
+      currentList = groupList.slice(); currentAssignments = {...groupAssignments};
+      fetchedToken = groupsResetToken; fetchedDeleted = deletedGroupIds;
+    }
+    if(groupsResetToken !== tokenAtStart){
+      // A reset happened locally while this fetch was in flight — re-base
+      // on the already-reset local state, same fix as withFreshRoster.
+      currentList = groupList.slice(); currentAssignments = {...groupAssignments};
+      fetchedToken = groupsResetToken; fetchedDeleted = deletedGroupIds;
+    }
+    const mutated = mutator({ list: currentList, assignments: currentAssignments }) || {};
+    const updatedList = mutated.list || currentList;
+    const updatedAssignments = mutated.assignments || currentAssignments;
+    if(fetchedToken !== groupsResetToken){
+      groupList = updatedList; groupAssignments = updatedAssignments;
+    } else {
+      deletedGroupIds = mergeDeletedIds(deletedGroupIds, fetchedDeleted);
+      groupList = mergeGroupList(groupList, updatedList, deletedGroupIds);
+      groupAssignments = mergeGroupAssignments(groupAssignments, updatedAssignments);
+    }
+    groupsResetToken = fetchedToken;
+    try{
+      const payload = JSON.stringify({ resetToken: groupsResetToken, groupList, assignments: groupAssignments, deletedIds: deletedGroupIds });
+      const res = await storageSet(GROUPS_KEY, payload, true);
+      if(!res) toast('Saved locally — sync failed');
+    }catch(e){ toast('Saved locally — sync failed'); }
+    renderGroupsMain();
+  });
+  await groupsWriteChain;
+}
+async function loadGroupsFromCloud(){
+  try{
+    const res = await cloudGet(GROUPS_KEY);
+    const raw = res && res.value ? JSON.parse(res.value) : {};
+    const parsed = parseGroupsPayload(raw);
+    if(parsed.resetToken !== groupsResetToken){
+      groupList = parsed.list; groupAssignments = parsed.assignments; deletedGroupIds = parsed.deletedIds;
+    } else {
+      deletedGroupIds = mergeDeletedIds(deletedGroupIds, parsed.deletedIds);
+      groupList = mergeGroupList(groupList, parsed.list, deletedGroupIds);
+      groupAssignments = mergeGroupAssignments(groupAssignments, parsed.assignments);
+    }
+    groupsResetToken = parsed.resetToken;
+  }catch(e){ groupList = []; groupAssignments = {}; }
+}
+async function backgroundPollGroups(){
+  if(groupsSyncing) return; groupsSyncing = true;
+  const tokenAtStart = groupsResetToken;
+  try{
+    const res = await cloudGet(GROUPS_KEY);
+    const raw = res && res.value ? JSON.parse(res.value) : {};
+    const parsed = parseGroupsPayload(raw);
+    if(groupsResetToken !== tokenAtStart){ groupsSyncing = false; return; }
+    let mergedList, mergedAssignments;
+    if(parsed.resetToken !== groupsResetToken){
+      mergedList = parsed.list; mergedAssignments = parsed.assignments;
+      deletedGroupIds = parsed.deletedIds;
+    } else {
+      deletedGroupIds = mergeDeletedIds(deletedGroupIds, parsed.deletedIds);
+      mergedList = mergeGroupList(groupList, parsed.list, deletedGroupIds);
+      mergedAssignments = mergeGroupAssignments(groupAssignments, parsed.assignments);
+    }
+    const changed = JSON.stringify(mergedList) !== JSON.stringify(groupList) ||
+                     JSON.stringify(mergedAssignments) !== JSON.stringify(groupAssignments);
+    groupsResetToken = parsed.resetToken;
+    if(changed){
+      groupList = mergedList; groupAssignments = mergedAssignments;
+      if(state.viewMode==='groups') renderGroupsMain();
+      else if(state.viewMode==='evaluator') renderCurrentForm();
+    }
+    updateSyncStatus('live');
+  }catch(e){ updateSyncStatus('offline'); }
+  groupsSyncing = false;
+}
+setInterval(backgroundPollGroups, 6000);
+
+function groupById(id){ return groupList.find(g=>g.id===id) || null; }
+// A group's own existence can be deleted out from under a pinny's
+// assignment record (same class of issue decisionFor() guards against
+// for a reassigned pinny) — treat a dangling groupId as unassigned
+// rather than crashing or showing a phantom group.
+function currentGroupIdFor(pinny){
+  const rec = groupAssignments[pinny];
+  if(!rec || !rec.groupId) return null;
+  return groupById(rec.groupId) ? rec.groupId : null;
+}
+function groupMembers(groupId){
+  return roster.filter(a=> a.pinny && currentGroupIdFor(a.pinny)===groupId)
+    .sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+}
+function unassignedRosterAthletes(){
+  return roster.filter(a=> a.pinny && !currentGroupIdFor(a.pinny))
+    .sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+}
+function uniqueGroupId(){ return 'grp-' + uid(); }
+async function createGroup(name){
+  name = (name||'').trim();
+  if(!name){ toast('Enter a group name first'); return; }
+  // Generated ONCE, outside the mutator — withFreshGroups calls this
+  // mutator twice (optimistic pass, then again against a fresh backend
+  // snapshot for the authoritative pass), and if the id were generated
+  // INSIDE the mutator, each call would mint a different one, so the
+  // merge step would see two distinct groups instead of recognizing
+  // them as the same create. Confirmed directly: without this, creating
+  // one group produced two, both with the same name but different ids.
+  const newGroup = { id: uniqueGroupId(), name, updatedAt: new Date().toISOString() };
+  await withFreshGroups(current=>{
+    if(current.list.some(g=> (g.name||'').trim().toLowerCase()===name.toLowerCase() && g.id!==newGroup.id)){
+      toast(`A group named "${name}" already exists`); return current;
+    }
+    if(current.list.some(g=>g.id===newGroup.id)) return current;
+    current.list = current.list.concat([newGroup]);
+    return current;
+  });
+  state.newGroupName = '';
+  toast(`Group "${name}" created`);
+}
+async function renameGroup(id, name){
+  name = (name||'').trim();
+  if(!name) return;
+  await withFreshGroups(current=>{
+    current.list = current.list.map(g=> g.id===id ? { ...g, name, updatedAt: new Date().toISOString() } : g);
+    return current;
+  });
+}
+async function deleteGroup(id, name){
+  if(!await customConfirm(`Delete the group "${name}"? Members will become unassigned. This can't be undone.`)) return;
+  await withFreshGroups(current=>{
+    current.list = current.list.filter(g=> g.id!==id);
+    const now = new Date().toISOString();
+    const nextAssignments = {...current.assignments};
+    Object.keys(nextAssignments).forEach(pinny=>{
+      if(nextAssignments[pinny] && nextAssignments[pinny].groupId===id){
+        nextAssignments[pinny] = { groupId: null, assignedAt: now };
+      }
+    });
+    current.assignments = nextAssignments;
+    return current;
+  });
+  deletedGroupIds = mergeDeletedIds(deletedGroupIds, [id]);
+  toast(`"${name}" deleted`);
+}
+async function assignAthleteToGroup(pinny, groupId){
+  await withFreshGroups(current=>{
+    current.assignments = { ...current.assignments, [pinny]: { groupId, assignedAt: new Date().toISOString() } };
+    return current;
+  });
+}
+async function removeAthleteFromGroup(pinny){
+  await withFreshGroups(current=>{
+    current.assignments = { ...current.assignments, [pinny]: { groupId: null, assignedAt: new Date().toISOString() } };
+    return current;
+  });
+}
+function groupSearchMatchesFor(groupId, query){
+  const q = (query||'').trim().toLowerCase();
+  if(!q) return [];
+  const already = new Set(groupMembers(groupId).map(a=>a.pinny));
+  return roster.filter(a=> a.pinny && !already.has(a.pinny) &&
+    ((a.name||'').toLowerCase().includes(q) || String(a.pinny).includes(q))).slice(0,8);
+}
+function addToGroupByQuery(groupId, query){
+  const q = (query||'').trim().toLowerCase();
+  if(!q){ toast('Type a name or pinnie number first'); return; }
+  const matches = groupSearchMatchesFor(groupId, query);
+  if(matches.length===0){ toast('No unassigned match found'); return; }
+  if(matches.length===1){
+    assignAthleteToGroup(matches[0].pinny, groupId);
+    state.groupSearchQuery[groupId] = ''; state.groupSearchMatches[groupId] = [];
+    renderGroupsMain();
+    return;
+  }
+  state.groupSearchMatches[groupId] = matches;
+  renderGroupsMain();
+}
+function groupMemberChipsHtml(groupId){
+  const members = groupMembers(groupId);
+  if(!members.length) return `<div class="groupmembers"><span class="empty">No athletes assigned yet.</span></div>`;
+  return `<div class="groupmembers">` + members.map(a=>
+    `<span class="groupmemberchip">#${a.pinny} ${escapeHtml(a.name)}<button data-ungroup="${a.pinny}" title="Remove from group">✕</button></span>`
+  ).join('') + `</div>`;
+}
+function renderGroupsMain(){
+  const main = document.getElementById('mainArea');
+  if(!main) return;
+  let html = `<div class="card"><h2>Groups</h2>
+    <p class="focus">Create any number of groups — squads, scrimmage teams, whatever fits — and assign checked-in athletes to them. Evaluators can then filter Station Entry &amp; Scrimmage by group to tap an athlete instead of typing a pinny number.</p>
+    <div class="groupaddrow">
+      <input id="newGroupNameInput" placeholder="New group name (e.g. Team 1, Squad A)" value="${escapeHtml(state.newGroupName)}">
+      <button class="logbtn" id="createGroupBtn" style="width:auto;padding:11px 16px">Create Group</button>
+    </div>
+  </div>`;
+
+  if(!groupList.length){
+    html += `<div class="card"><p class="empty">No groups yet — create one above to get started.</p></div>`;
+  } else {
+    groupList.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).forEach(g=>{
+      const members = groupMembers(g.id);
+      const matches = state.groupSearchMatches[g.id] || [];
+      html += `<div class="groupcard">
+        <div class="groupcard-head">
+          <input class="groupnameinput" data-rename="${g.id}" value="${escapeHtml(g.name)}">
+          <span class="groupcount">${members.length} athlete${members.length===1?'':'s'}</span>
+          <button class="groupdelbtn" data-delgroup="${g.id}" data-name="${escapeHtml(g.name)}" title="Delete group">✕</button>
+        </div>
+        ${groupMemberChipsHtml(g.id)}
+        <div class="groupaddrow">
+          <input data-groupsearch="${g.id}" placeholder="Add athlete by name or pinnie #" value="${escapeHtml(state.groupSearchQuery[g.id]||'')}">
+          <button class="ghost" data-groupaddbtn="${g.id}" style="flex:0 0 auto">Add</button>
+        </div>`;
+      if(matches.length){
+        html += `<div class="comparechips">` + matches.map(m=>
+          `<button class="comparechip" style="border:none;cursor:pointer" data-pickgroupmatch="${g.id}" data-pinny="${m.pinny}">#${m.pinny} ${escapeHtml(m.name)}</button>`
+        ).join('') + `</div>`;
+      }
+      html += `</div>`;
+    });
+  }
+
+  const unassigned = unassignedRosterAthletes();
+  html += `<div class="groupunassigned">
+    <span class="groupcount">Unassigned (${unassigned.length})</span>
+    <div class="chips">` + (unassigned.length
+      ? unassigned.map(a=>`<span class="chip">#${a.pinny} ${escapeHtml(a.name)}</span>`).join('')
+      : `<span class="empty">Everyone checked in has a group.</span>`) + `</div>
+  </div>`;
+
+  main.innerHTML = html;
+
+  document.getElementById('newGroupNameInput').oninput = (e)=>{ state.newGroupName = e.target.value; };
+  document.getElementById('createGroupBtn').onclick = ()=> createGroup(document.getElementById('newGroupNameInput').value);
+  document.querySelectorAll('[data-rename]').forEach(inp=>{
+    inp.onchange = ()=> renameGroup(inp.dataset.rename, inp.value);
+  });
+  document.querySelectorAll('[data-delgroup]').forEach(b=>{
+    b.onclick = ()=> deleteGroup(b.dataset.delgroup, b.dataset.name);
+  });
+  document.querySelectorAll('[data-ungroup]').forEach(b=>{
+    b.onclick = ()=> removeAthleteFromGroup(parseInt(b.dataset.ungroup));
+  });
+  document.querySelectorAll('[data-groupsearch]').forEach(inp=>{
+    inp.oninput = (e)=>{ state.groupSearchQuery[inp.dataset.groupsearch] = e.target.value; state.groupSearchMatches[inp.dataset.groupsearch] = []; };
+  });
+  document.querySelectorAll('[data-groupaddbtn]').forEach(b=>{
+    b.onclick = ()=>{
+      const gid = b.dataset.groupaddbtn;
+      addToGroupByQuery(gid, state.groupSearchQuery[gid]||'');
+    };
+  });
+  document.querySelectorAll('[data-pickgroupmatch]').forEach(b=>{
+    b.onclick = ()=>{
+      const gid = b.dataset.pickgroupmatch;
+      assignAthleteToGroup(parseInt(b.dataset.pinny), gid);
+      state.groupSearchQuery[gid] = ''; state.groupSearchMatches[gid] = [];
+      renderGroupsMain();
+    };
+  });
+}
+
+// Evaluator-side quick picker — a group filter dropdown plus a
+// horizontal strip of tappable athlete pills, shown above the manual
+// pinny input in Station Entry and Scrimmage. Purely a faster way to
+// set the same state.values._athlete the number input already sets;
+// changes nothing about how a logged entry is structured or saved.
+function groupPickerHtml(){
+  if(!groupList.length) return '';
+  let html = `<div class="grouppickerwrap"><div class="field"><label>Group filter (optional quick-select)</label>
+    <select id="evalGroupSelect"><option value="">— No filter, type pinny manually —</option>` +
+    groupList.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(g=>
+      `<option value="${g.id}" ${state.selectedGroupId===g.id?'selected':''}>${escapeHtml(g.name)}</option>`
+    ).join('') + `</select></div>`;
+  if(state.selectedGroupId && groupById(state.selectedGroupId)){
+    const members = groupMembers(state.selectedGroupId);
+    html += `<div class="grouppickerstrip">` + (members.length
+      ? members.map(a=>
+          `<button class="grouppill ${String(state.values._athlete)===String(a.pinny)?'sel':''}" data-grouppick="${a.pinny}"><span class="pn">#${a.pinny}</span>${escapeHtml(a.name)}</button>`
+        ).join('')
+      : `<span class="empty">No athletes in this group yet.</span>`) + `</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+function wireGroupPicker(){
+  const sel = document.getElementById('evalGroupSelect');
+  if(sel) sel.onchange = (e)=>{ state.selectedGroupId = e.target.value; renderCurrentForm(); };
+  document.querySelectorAll('[data-grouppick]').forEach(b=>{
+    b.onclick = ()=>{ state.values._athlete = parseInt(b.dataset.grouppick); renderCurrentForm(); };
+  });
+}
+
 // A render exception here previously meant the affected view silently
 // stayed blank or frozen with nothing on screen — exactly what happened
 // with the filteredRoster() name-sort bug above: `roster` itself was
@@ -3276,6 +3690,7 @@ function safeRender(renderFn, label){
   }
 }
 function renderAll(){
+
   const stationTabsEl = document.getElementById('stationTabs');
   const idRowEl = document.getElementById('idRow');
   if(state.viewMode==='coach'){
@@ -3299,6 +3714,13 @@ function renderAll(){
     safeRender(renderSelectionMain, 'Team Selection');
     return;
   }
+  if(state.viewMode==='groups'){
+    stationTabsEl.style.display='none';
+    idRowEl.style.display='none';
+    document.getElementById('sessionTabs').innerHTML='';
+    safeRender(renderGroupsMain, 'Groups');
+    return;
+  }
   stationTabsEl.style.display='';
   idRowEl.style.display='';
   renderSessionTabs();
@@ -3309,7 +3731,7 @@ function renderAll(){
 
 function setActiveMode(mode){
   state.viewMode = mode;
-  ['modeEvaluator','modeCoach','modeCheckin','modeSelection'].forEach(id=>{
+  ['modeEvaluator','modeCoach','modeCheckin','modeSelection','modeGroups'].forEach(id=>{
     document.getElementById(id).classList.toggle('active', id === 'mode'+mode.charAt(0).toUpperCase()+mode.slice(1));
   });
   renderAll();
@@ -3318,6 +3740,7 @@ document.getElementById('modeEvaluator').onclick = ()=> setActiveMode('evaluator
 document.getElementById('modeCoach').onclick = ()=> setActiveMode('coach');
 document.getElementById('modeCheckin').onclick = ()=> setActiveMode('checkin');
 document.getElementById('modeSelection').onclick = ()=> setActiveMode('selection');
+document.getElementById('modeGroups').onclick = ()=> setActiveMode('groups');
 
 /* ---------------------------------------------------------------
    LIVE AUTO-SYNC
@@ -3537,7 +3960,8 @@ if(versionReloadBtn) versionReloadBtn.onclick = ()=> window.location.reload();
 Promise.all([
   migrateOldEntriesFormat().then(loadEntries),
   loadRosterFromCloud(),
-  loadDecisionsFromCloud()
+  loadDecisionsFromCloud(),
+  loadGroupsFromCloud()
 ]).then(renderAll);
 checkForNewVersion(); // also check once immediately on load, in case an
 // update shipped between when this tab's HTML was fetched and when its

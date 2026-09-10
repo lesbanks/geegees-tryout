@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-08-r1';
+const APP_VERSION = '2026-09-10-r1';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -3322,6 +3322,7 @@ state.groupSearchQuery = {};   // per-group-id search text for "add athlete"
 state.groupSearchMatches = {}; // per-group-id current match list
 state.newGroupName = '';
 state.selectedGroupId = '';    // evaluator-side quick-picker filter
+state.groupFilterTouched = false; // has the evaluator ever explicitly changed the filter (including choosing "No filter") — distinguishes "never set yet, safe to auto-default" from "deliberately set to no filter, must not override"
 state.unassignedTargetGroupId = ''; // which group a tap in the Unassigned list adds to
 
 function parseGroupsPayload(raw){
@@ -3708,9 +3709,19 @@ function renderGroupsMain(){
 // changes nothing about how a logged entry is structured or saved.
 function groupPickerHtml(){
   if(!groupList.length) return '';
+  // Defaults to the first group (alphabetically, matching the dropdown's
+  // own ordering below) whenever nothing has been explicitly picked yet,
+  // or the previously-picked group no longer exists — same reasoning as
+  // the Unassigned-list target selector in Groups. Without this, a coach
+  // running a single-group scrimmage would have to re-pick that one
+  // group from the dropdown on every tablet before the quick-picker
+  // became useful, even though there's only one sensible choice.
+  const sortedGroups = groupList.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+  if(state.selectedGroupId && !groupById(state.selectedGroupId)) state.selectedGroupId = '';
+  if(!state.groupFilterTouched && !state.selectedGroupId && sortedGroups.length) state.selectedGroupId = sortedGroups[0].id;
   let html = `<div class="grouppickerwrap"><div class="field"><label>Group filter (optional quick-select)</label>
     <select id="evalGroupSelect"><option value="">— No filter, type pinny manually —</option>` +
-    groupList.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(g=>
+    sortedGroups.map(g=>
       `<option value="${g.id}" ${state.selectedGroupId===g.id?'selected':''}>${escapeHtml(g.name)}</option>`
     ).join('') + `</select></div>`;
   if(state.selectedGroupId && groupById(state.selectedGroupId)){
@@ -3726,7 +3737,7 @@ function groupPickerHtml(){
 }
 function wireGroupPicker(){
   const sel = document.getElementById('evalGroupSelect');
-  if(sel) sel.onchange = (e)=>{ state.selectedGroupId = e.target.value; renderCurrentForm(); };
+  if(sel) sel.onchange = (e)=>{ state.selectedGroupId = e.target.value; state.groupFilterTouched = true; renderCurrentForm(); };
   document.querySelectorAll('[data-grouppick]').forEach(b=>{
     b.onclick = ()=>{ state.values._athlete = parseInt(b.dataset.grouppick); renderCurrentForm(); };
   });

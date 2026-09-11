@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r5';
+const APP_VERSION = '2026-09-10-r6';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -1866,6 +1866,46 @@ function exportStationResultsCsv(){
 state.testToolsUnlocked = false;
 state.testToolsUnlockInput = '';
 const TEST_TOOLS_UNLOCK_PHRASE = 'unlock test tools';
+
+// ---------------------------------------------------------------
+// TEAM SELECTION PASSWORD — this tab holds sensitive, potentially
+// hurtful decisions (who's on Reserve, who's being Released) and is
+// meant to be visible to coaching staff only, not evaluators or anyone
+// who picks up a tablet. IMPORTANT LIMITATION: this is a client-side
+// gate only — the password lives in this file's own source, so it
+// stops casual/accidental access (an evaluator tapping the tab, an
+// athlete borrowing a device) but does NOT protect the underlying data
+// from anyone who inspects the page source or queries the backend
+// directly. Treat it as a deliberate barrier, not real security.
+// CHANGE THIS before your next session — this is what a coach types.
+// ---------------------------------------------------------------
+const TEAM_SELECTION_PASSWORD = 'CHANGE_ME_geegees2026';
+state.teamSelectionUnlocked = false;
+state.teamSelectionPasswordInput = '';
+function teamSelectionGateHtml(){
+  return `<div class="card">
+    <h2>Team Selection</h2>
+    <p class="focus">This section holds sensitive team decisions (Reserve, Release, notes) and is limited to coaching staff. Enter the password to continue.</p>
+    <div class="filterbar">
+      <input id="teamSelPasswordInput" type="password" placeholder="Password" value="${escapeHtml(state.teamSelectionPasswordInput)}">
+      <button class="ghost" id="teamSelUnlockBtn" style="flex:0 0 auto">Unlock</button>
+    </div>
+  </div>`;
+}
+function wireTeamSelectionGate(){
+  const input = document.getElementById('teamSelPasswordInput');
+  if(input) input.oninput = (e)=>{ state.teamSelectionPasswordInput = e.target.value; };
+  const btn = document.getElementById('teamSelUnlockBtn');
+  if(btn) btn.onclick = ()=>{
+    if(state.teamSelectionPasswordInput === TEAM_SELECTION_PASSWORD){
+      state.teamSelectionUnlocked = true;
+      state.teamSelectionPasswordInput = '';
+      renderSelectionMain();
+    } else {
+      toast('Incorrect password');
+    }
+  };
+}
 function testToolsGateHtml(bodyHtml, idPrefix){
   if(!state.testToolsUnlocked){
     return `<div class="card">
@@ -3331,6 +3371,11 @@ function renderSelectionTable(){
 }
 function renderSelectionMain(){
   const main = document.getElementById('mainArea');
+  if(!state.teamSelectionUnlocked){
+    main.innerHTML = teamSelectionGateHtml();
+    wireTeamSelectionGate();
+    return;
+  }
   const list = filteredSelection();
   const all = selectionRoster();
   const counts = { team1:0, team2:0, reserve:0, release:0, undecided:0 };
@@ -3338,6 +3383,7 @@ function renderSelectionMain(){
 
   let html = `<div class="card"><h2>Team Selection</h2>
     <p class="focus">Pulled from the Sign-In roster (identity + pinnie) joined with the skill grades, scrimmage compete score, and TCS average logged for that pinnie in Evaluator/Coach mode. Only checked-in athletes with a pinnie appear here.</p>
+    <div class="rowrow" style="margin-bottom:10px"><button class="ghost" id="teamSelLockBtn">Lock Team Selection</button></div>
     <div class="statgrid" style="grid-template-columns:repeat(5,1fr)">
       <div class="statbox"><span class="n">${counts.team1}</span><span class="l">Team 1</span></div>
       <div class="statbox"><span class="n">${counts.team2}</span><span class="l">Team 2</span></div>
@@ -3444,6 +3490,7 @@ function renderSelectionMain(){
   document.querySelectorAll('[data-uncompare]').forEach(b=>{
     b.onclick = ()=> toggleCompare(parseInt(b.dataset.uncompare));
   });
+  document.getElementById('teamSelLockBtn').onclick = ()=>{ state.teamSelectionUnlocked = false; renderSelectionMain(); };
   wireSelectionTableRows();
 }
 

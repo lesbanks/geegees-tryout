@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r7';
+const APP_VERSION = '2026-09-10-r8';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -521,6 +521,21 @@ const FIQ_EVENTS = [
    ROSTER (for simulation / dry-run testing only)
 ---------------------------------------------------------------- */
 const POSITION_OPTIONS = ['Quarterback','Receiver','Center','Defender','Rusher'];
+// Display-only shortening — never touches stored roster/position data,
+// only what's rendered. Handles both plain English tokens ("Receiver")
+// and the bilingual form pasted rosters actually use ("Receiver /
+// Receveur"), and leaves anything unrecognized exactly as-is rather
+// than guessing, so it degrades safely on data this doesn't expect.
+const POSITION_SHORT_CODES = { quarterback:'QB', receiver:'WR', center:'C', defender:'DB', rusher:'B' };
+function shortPositionLabel(posStr){
+  if(!posStr) return '';
+  return posStr.split(',').map(token=>{
+    const trimmed = token.trim();
+    if(!trimmed) return trimmed;
+    const englishPart = trimmed.split('/')[0].trim().toLowerCase();
+    return POSITION_SHORT_CODES[englishPart] || trimmed;
+  }).join(', ');
+}
 const ROSTER = [
   {num:1,name:"Abigail Snider",year:"1st",pos:"Receiver, Defender"},
   {num:2,name:"Alexandra Gagnon",year:"1st",pos:"Center"},
@@ -1893,6 +1908,13 @@ const TEAM_SELECTION_HEAD_COACH = {code:'LB', password:'OttawaGG2'};
 function allTeamSelectionLogins(){ return [...TEAM_SELECTION_EVALUATORS, TEAM_SELECTION_HEAD_COACH]; }
 function isHeadCoachLoggedIn(){ return state.teamSelLoggedInAs === TEAM_SELECTION_HEAD_COACH.code; }
 state.teamSelLoggedInAs = null; // null | 'AH' | 'SB' | ... | 'LB'
+state.teamSelLastActivityAt = null;
+// Auto-logout after inactivity — the whole point of separate logins is
+// privacy between evaluators, and a forgotten "Log Out" on a shared
+// tablet quietly defeats that. 20 minutes is long enough not to
+// interrupt someone actively working through the roster, short enough
+// that a tablet left unattended doesn't stay logged in indefinitely.
+const TEAM_SELECTION_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
 state.teamSelLoginCodeChoice = '';
 state.teamSelLoginPasswordInput = '';
 
@@ -2014,17 +2036,28 @@ async function activeSetDecisionNote(pinny, note){
   if(state.teamSelLoggedInAs) return setEvaluatorDecisionNote(state.teamSelLoggedInAs, pinny, note);
 }
 const EVAL_STATUS_SHORT = {team1:'T1', team2:'T2', reserve:'Res', release:'Rel'};
+const KEEP_STATUSES = ['team1','team2'];
 // Head-coach-only: a compact per-evaluator breakdown for one athlete —
-// each evaluator's individual pick plus a tally across all of them.
+// each evaluator's individual pick, a tally, how many have weighed in
+// at all (so a still-missing evaluator isn't mistaken for "undecided
+// meaning cut"), whether opinions are genuinely split (someone said
+// keep, someone said release — the case actually worth a second look
+// in the room, not just any spread across the milder statuses), and
+// each evaluator's note where they left one.
 function evaluatorRecapFor(pinny, currentName){
   const tally = {team1:0, team2:0, reserve:0, release:0};
+  let pickedCount = 0;
+  const notes = [];
   const parts = TEAM_SELECTION_EVALUATORS.map(ev=>{
     const d = evaluatorDecisionFor(ev.code, pinny, currentName);
-    if(d && d.status) tally[d.status]++;
+    if(d && d.status){ tally[d.status]++; pickedCount++; }
+    if(d && d.note && d.note.trim()) notes.push({ code: ev.code, note: d.note.trim() });
     return `${ev.code}:${d && d.status ? EVAL_STATUS_SHORT[d.status] : '—'}`;
   });
   const tallyStr = Object.keys(tally).filter(k=>tally[k]>0).map(k=>`${EVAL_STATUS_SHORT[k]}×${tally[k]}`).join(' ') || 'No picks yet';
-  return { line: parts.join('  '), tallyStr };
+  const total = TEAM_SELECTION_EVALUATORS.length;
+  const disagreement = KEEP_STATUSES.some(s=>tally[s]>0) && tally.release>0;
+  return { line: parts.join('  '), tallyStr, pickedCount, total, disagreement, notes };
 }
 function teamSelectionGateHtml(){
   const options = TEAM_SELECTION_EVALUATORS.map(ev=>`<option value="${ev.code}" ${state.teamSelLoginCodeChoice===ev.code?'selected':''}>${ev.code}</option>`).join('')
@@ -2051,6 +2084,7 @@ async function attemptTeamSelectionLogin(){
   }
   state.teamSelLoggedInAs = code;
   state.teamSelLoginPasswordInput = '';
+  state.teamSelLastActivityAt = Date.now();
   if(code === TEAM_SELECTION_HEAD_COACH.code) await loadAllEvaluatorDecisionsForHeadCoach();
   else await loadEvaluatorDecisionsFor(code);
   renderSelectionMain();
@@ -2067,7 +2101,19 @@ function wireTeamSelectionGate(){
 // view of the relevant evaluator data(s) fresh — evaluators re-poll
 // only their own key (multi-device use by the same evaluator), Head
 // Coach re-polls everyone's, so new picks show up without a full reload.
+// Runs regardless of which tab is currently showing — the risk being
+// guarded against is someone leaving Team Selection logged in and later
+// navigating back to it (or someone else picking up the device), not
+// just staying logged in while actively on the tab.
+function checkTeamSelectionIdleTimeout(){
+  if(!state.teamSelLoggedInAs) return;
+  if(Date.now() - (state.teamSelLastActivityAt||0) > TEAM_SELECTION_IDLE_TIMEOUT_MS){
+    state.teamSelLoggedInAs = null;
+    if(state.viewMode==='selection') renderSelectionMain();
+  }
+}
 async function pollTeamSelectionData(){
+  checkTeamSelectionIdleTimeout();
   if(state.viewMode !== 'selection' || !state.teamSelLoggedInAs) return;
   if(isHeadCoachLoggedIn()) await loadAllEvaluatorDecisionsForHeadCoach();
   else await loadEvaluatorDecisionsFor(state.teamSelLoggedInAs);
@@ -2125,6 +2171,7 @@ function renderCoachDashboard(){
   let html = `<div class="card" style="background:#FAF8F4;padding:10px 14px;margin-bottom:10px">
     <span id="rosterDiagLine" style="font-size:11px;color:var(--grey);font-family:ui-monospace,monospace;display:block">${rosterDiagText()}</span>
     <span id="entriesDiagLine" style="font-size:11px;color:var(--grey);font-family:ui-monospace,monospace;display:block;margin-top:4px">${entriesDiagText()}</span>
+    <span id="backupDiagLine" style="font-size:11px;color:var(--grey);font-family:ui-monospace,monospace;display:block;margin-top:4px">${backupDiagText()}</span>
   </div>
   ` + testToolsGateHtml(`
     <p class="focus" style="margin-top:8px">Simulates every currently-registered athlete (falls back to the 27-person seed roster if nobody's registered yet). Entries use evaluators EV1–EV5 (one per station) plus EV-SCRIM for scrimmage/TCS, so they're easy to spot and clear before the real thing.</p>
@@ -3012,7 +3059,7 @@ function checkinTableHtml(list, day){
       </td>
       <td><span class="rostername">${escapeHtml(a.name)}</span></td>
       <td><span class="rosteryear">${escapeHtml(a.year||'')}</span></td>
-      <td><span class="rosterpos">${escapeHtml(a.pos||'')}</span></td>
+      <td><span class="rosterpos">${escapeHtml(shortPositionLabel(a.pos||""))}</span></td>
       <td>
         <div class="statusbtns">
           <button class="presentbtn ${isIn?'on':''}" data-checkin="${a.listNum}">${isIn?'✓ Present':'Check In'}</button>
@@ -3223,6 +3270,9 @@ state.selectionSearch = '';
 state.selectionStatusFilter = 'all';
 state.selectionSort = 'name';
 state.selectionPositionFilter = 'all';
+state.selectionNotesExpanded = {}; // pinny -> bool, head-coach-only note expansion
+state.selectionCoverageFilter = 'all'; // head-coach-only: all | missing | complete
+state.selectionDisagreementOnly = false; // head-coach-only
 state.compareQuery = '';
 state.compareList = [];
 state.compareMatches = [];
@@ -3429,6 +3479,14 @@ function filteredSelection(){
     const pf = state.selectionPositionFilter.toLowerCase();
     list = list.filter(a=> (a.pos||'').toLowerCase().split(',').some(p=>p.trim()===pf));
   }
+  // Head-coach-only filters — evaluatorRecapFor is meaningless for an
+  // evaluator's own view (they only ever see their own single pick), so
+  // these are no-ops for anyone else regardless of what's in state.
+  if(isHeadCoachLoggedIn()){
+    if(state.selectionCoverageFilter==='missing') list = list.filter(a=> evaluatorRecapFor(a.pinny, a.name).pickedCount < TEAM_SELECTION_EVALUATORS.length);
+    else if(state.selectionCoverageFilter==='complete') list = list.filter(a=> evaluatorRecapFor(a.pinny, a.name).pickedCount === TEAM_SELECTION_EVALUATORS.length);
+    if(state.selectionDisagreementOnly) list = list.filter(a=> evaluatorRecapFor(a.pinny, a.name).disagreement);
+  }
   const sortFns = {
     name: (a,b)=> (a.name||'').localeCompare(b.name||''),
     position: (a,b)=> (a.pos||'').localeCompare(b.pos||'') || (a.name||'').localeCompare(b.name||''),
@@ -3504,18 +3562,28 @@ function selectionTableHtml(list){
   </tr></thead><tbody>`;
   list.forEach(a=>{
     const recap = headCoach ? evaluatorRecapFor(a.pinny, a.name) : null;
+    const notesExpanded = headCoach && state.selectionNotesExpanded[a.pinny];
     html += `<tr>
       <td><input type="checkbox" class="comparecheck" data-compare="${a.pinny}" ${state.compareList.includes(a.pinny)?'checked':''}></td>
       <td><span class="pinnybadge">#${a.pinny}</span></td>
       <td><span class="rostername">${escapeHtml(a.name)}</span><div class="rosteryear">${escapeHtml(a.year||'')} · ${a.paid?'Paid':'Unpaid'}</div></td>
-      <td><span class="rosterpos">${escapeHtml(a.pos||'')}</span></td>
+      <td><span class="rosterpos">${escapeHtml(shortPositionLabel(a.pos||""))}</span></td>
       <td>${fmtMetric(a.metrics.skillAvg)}</td>
       <td>${a.metrics.compete>0?'+':''}${a.metrics.compete}</td>
       <td>${fmtMetric(a.metrics.tcsAvg)}</td>
-      ${headCoach ? `<td style="font-size:11px;white-space:nowrap"><div>${escapeHtml(recap.line)}</div><div style="color:var(--grey);margin-top:2px">${escapeHtml(recap.tallyStr)}</div></td>` : ''}
+      ${headCoach ? `<td style="font-size:11px;white-space:nowrap">
+        <div>${escapeHtml(recap.line)}</div>
+        <div style="color:var(--grey);margin-top:2px">${escapeHtml(recap.tallyStr)} · ${recap.pickedCount}/${recap.total} picked${recap.disagreement?' · <span style="color:var(--flag);font-weight:700">⚠ Split</span>':''}</div>
+        ${recap.notes.length ? `<button class="toggle-link" data-notestoggle="${a.pinny}" style="margin-top:2px">${notesExpanded?'Hide':'Show'} ${recap.notes.length} note${recap.notes.length>1?'s':''}</button>` : ''}
+      </td>` : ''}
       <td><span class="decisionbadge ${a.status||'undecided'}">${statusLabel(a.status)}</span></td>
       <td><div class="decidebtns">${decideButtons(a.pinny, a.status)}</div></td>
     </tr>`;
+    if(notesExpanded && recap.notes.length){
+      html += `<tr><td></td><td colspan="8" style="background:#FAF8F4;font-size:12px;padding:8px 12px">
+        ${recap.notes.map(n=>`<div style="margin-bottom:4px"><b>${escapeHtml(n.code)}:</b> ${escapeHtml(n.note)}</div>`).join('')}
+      </td></tr>`;
+    }
   });
   html += `</tbody></table></div>
   <p class="empty" style="display:${list.length?'none':'block'}">No athletes match this filter.</p>`;
@@ -3527,6 +3595,13 @@ function wireSelectionTableRows(){
   });
   document.querySelectorAll('[data-decide]').forEach(b=>{
     b.onclick = ()=> activeAssignDecision(parseInt(b.dataset.decide), b.dataset.status);
+  });
+  document.querySelectorAll('[data-notestoggle]').forEach(b=>{
+    b.onclick = ()=>{
+      const pinny = parseInt(b.dataset.notestoggle);
+      state.selectionNotesExpanded[pinny] = !state.selectionNotesExpanded[pinny];
+      renderSelectionTable();
+    };
   });
 }
 // Table-only refresh, same reasoning as renderCheckinTable — rebuilding the
@@ -3572,7 +3647,7 @@ function renderSelectionMain(){
       <th>Position</th><th>Total</th><th>Team 1</th><th>Team 2</th><th>Reserve</th><th>Release</th><th>Undecided</th>
     </tr></thead><tbody>` +
       positionBreakdown().map(r=>`<tr>
-        <td><span class="rosterpos">${escapeHtml(r.pos)}</span></td><td>${r.total}</td><td>${r.team1}</td><td>${r.team2}</td><td>${r.reserve}</td><td>${r.release}</td><td>${r.undecided}</td>
+        <td><span class="rosterpos">${escapeHtml(shortPositionLabel(r.pos))}</span></td><td>${r.total}</td><td>${r.team1}</td><td>${r.team2}</td><td>${r.reserve}</td><td>${r.release}</td><td>${r.undecided}</td>
       </tr>`).join('') +
     `</tbody></table></div>
   </div>`;
@@ -3607,7 +3682,7 @@ function renderSelectionMain(){
           <div class="comparestat">Compete (+/-) <b>${a.metrics.compete>0?'+':''}${a.metrics.compete}</b></div>
           <div class="comparestat">TCS Avg <b>${fmtMetric(a.metrics.tcsAvg)}</b></div>
           <div class="comparestat">Reps Logged <b>${a.metrics.reps}</b></div>
-          <div class="comparepos">${escapeHtml(a.year||'')} · ${escapeHtml(a.pos||'')} · ${a.paid?'Paid':'Unpaid'}</div>
+          <div class="comparepos">${escapeHtml(a.year||'')} · ${escapeHtml(shortPositionLabel(a.pos||''))} · ${a.paid?'Paid':'Unpaid'}</div>
           <div class="comparestat" style="margin-top:6px"><b>Combine</b><br><span style="font-size:11px">${combineList}</span></div>
           <div class="decidebtns" style="margin-top:8px">${decideButtons(a.pinny, a.status)}</div>
           <textarea class="comparenote" data-note="${a.pinny}" placeholder="Why? (optional note for the cut meeting)">${escapeHtml(a.note||'')}</textarea>
@@ -3633,7 +3708,7 @@ function renderSelectionMain(){
       </select>
       <select id="selectionPositionFilter">
         <option value="all" ${state.selectionPositionFilter==='all'?'selected':''}>All positions</option>` +
-        distinctPositions().map(p=>`<option value="${escapeHtml(p)}" ${state.selectionPositionFilter===p?'selected':''}>${escapeHtml(p)}</option>`).join('') +
+        distinctPositions().map(p=>`<option value="${escapeHtml(p)}" ${state.selectionPositionFilter===p?'selected':''}>${escapeHtml(shortPositionLabel(p))}</option>`).join('') +
       `</select>
       <select id="selectionSort">
         <option value="name" ${state.selectionSort==='name'?'selected':''}>Sort: Name</option>
@@ -3641,17 +3716,32 @@ function renderSelectionMain(){
         <option value="skill" ${state.selectionSort==='skill'?'selected':''}>Sort: Skill Avg</option>
         <option value="compete" ${state.selectionSort==='compete'?'selected':''}>Sort: Compete</option>
         <option value="tcs" ${state.selectionSort==='tcs'?'selected':''}>Sort: TCS Avg</option>
+      </select>${headCoach ? `
+      <select id="selectionCoverageFilter">
+        <option value="all" ${state.selectionCoverageFilter==='all'?'selected':''}>All evaluator coverage</option>
+        <option value="missing" ${state.selectionCoverageFilter==='missing'?'selected':''}>Missing a pick</option>
+        <option value="complete" ${state.selectionCoverageFilter==='complete'?'selected':''}>Fully picked</option>
       </select>
+      <label class="poscheck" style="align-self:center"><input type="checkbox" id="selectionDisagreementOnly" ${state.selectionDisagreementOnly?'checked':''}> Disagreements only</label>` : ''}
     </div>
     <div id="selectionTableWrap">${selectionTableHtml(list)}</div>
   <div class="exportbar"><button id="exportDecisionsBtn">Export Decisions CSV</button></div>
   </div>`;
 
   main.innerHTML = html;
+  // Delegated activity tracking for the idle-timeout: catches any click
+  // or typing anywhere in this view without needing to touch every
+  // individual handler above and below.
+  main.onclick = ()=>{ state.teamSelLastActivityAt = Date.now(); };
+  main.oninput = ()=>{ state.teamSelLastActivityAt = Date.now(); };
 
   document.getElementById('selectionSearch').oninput = (e)=>{ state.selectionSearch = e.target.value; renderSelectionTable(); };
   document.getElementById('selectionStatusFilter').onchange = (e)=>{ state.selectionStatusFilter = e.target.value; renderSelectionMain(); };
   document.getElementById('selectionPositionFilter').onchange = (e)=>{ state.selectionPositionFilter = e.target.value; renderSelectionMain(); };
+  const coverageFilter = document.getElementById('selectionCoverageFilter');
+  if(coverageFilter) coverageFilter.onchange = (e)=>{ state.selectionCoverageFilter = e.target.value; renderSelectionMain(); };
+  const disagreementOnly = document.getElementById('selectionDisagreementOnly');
+  if(disagreementOnly) disagreementOnly.onchange = (e)=>{ state.selectionDisagreementOnly = e.target.checked; renderSelectionMain(); };
   document.getElementById('selectionSort').onchange = (e)=>{ state.selectionSort = e.target.value; renderSelectionMain(); };
   document.getElementById('exportDecisionsBtn').onclick = exportDecisionsCsv;
   document.getElementById('compareQuery').oninput = (e)=>{ state.compareQuery = e.target.value; };
@@ -3884,7 +3974,17 @@ setInterval(backgroundPollSharedState, 6000);
 const BACKUP_SLOTS = 6;
 const BACKUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 function backupKeyForSlot(slot){ return `geegees-backup-slot-${slot}`; }
+let backupDiag = { lastAttemptTime: null, lastSuccessTime: null, status: 'pending' };
+function backupDiagText(){
+  const t = backupDiag.lastSuccessTime ? new Date(backupDiag.lastSuccessTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
+  return `Last backup: ${t} · Result: ${backupDiag.status}`;
+}
+function renderBackupDiagLine(){
+  const el = document.getElementById('backupDiagLine');
+  if(el) el.textContent = backupDiagText();
+}
 async function runBackupSnapshot(){
+  backupDiag.lastAttemptTime = Date.now();
   try{
     const slot = Math.floor(Date.now() / BACKUP_INTERVAL_MS) % BACKUP_SLOTS;
     const payload = JSON.stringify({
@@ -3894,8 +3994,14 @@ async function runBackupSnapshot(){
       groupList: groupList,
       groupAssignments: groupAssignments
     });
-    await storageSet(backupKeyForSlot(slot), payload, true);
-  }catch(e){ /* a missed backup is not urgent — the next scheduled one will try again */ }
+    const res = await storageSet(backupKeyForSlot(slot), payload, true);
+    backupDiag.status = res ? 'ok' : 'failed';
+    if(res) backupDiag.lastSuccessTime = Date.now();
+  }catch(e){
+    // a missed backup is not urgent — the next scheduled one will try again
+    backupDiag.status = 'failed';
+  }
+  if(state.viewMode==='coach') renderBackupDiagLine();
 }
 setInterval(runBackupSnapshot, BACKUP_INTERVAL_MS);
 // Also snapshot once shortly after boot, once the initial load has had

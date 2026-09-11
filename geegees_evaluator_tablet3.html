@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r4';
+const APP_VERSION = '2026-09-10-r5';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -822,15 +822,26 @@ async function migrateOldEntriesFormat(){
       if(!byPartition[key]) byPartition[key] = { day: e.session, suffix, list: [] };
       byPartition[key].list.push(e);
     });
-    await Promise.all(Object.values(byPartition).map(async (p)=>{
+    const results = await Promise.all(Object.values(byPartition).map(async (p)=>{
       const key = entriesKeyFor(p.day, p.suffix);
-      const existingRes = await cloudGet(key);
-      const existingRaw = existingRes && existingRes.value ? JSON.parse(existingRes.value) : [];
+      const safe = await cloudGetSafe(key);
+      if(!safe.ok) return false; // couldn't verify what's already there —
+      // skip this partition rather than risk overwriting real data with a
+      // fetch failure mistaken for "nothing here yet." Since the old key
+      // only gets cleared below once every partition succeeds, a skipped
+      // one just gets retried on the next boot instead of losing data.
+      const existingRaw = safe.value ? JSON.parse(safe.value) : [];
       const existingParsed = parseEntriesPayload(existingRaw);
       const merged = mergeEntriesById(p.list, existingParsed.list, existingParsed.deletedIds);
       const payload = JSON.stringify({ resetToken: existingParsed.resetToken, entries: merged, deletedIds: existingParsed.deletedIds });
-      await storageSet(key, payload, true);
+      const res = await storageSet(key, payload, true);
+      return !!res;
     }));
+    // Only clear the old key once EVERY partition's migration actually
+    // succeeded — clearing it unconditionally (as this used to) would
+    // permanently lose any partition that was skipped or failed above,
+    // since there'd be nothing left to retry from on the next boot.
+    if(!results.every(Boolean)) return;
     // Leave the old key empty rather than deleting it — avoids re-running
     // this migration on every future boot without needing a separate
     // "already migrated" flag.
@@ -936,8 +947,9 @@ async function saveEntries(dayLabel, suffix){
       const belongsHere = e => e.session===dayLabel && partitionSuffix(e)===suffix;
       if(!entriesClearInProgress){
         try{
-          const res = await cloudGet(key);
-          const raw = res && res.value ? JSON.parse(res.value) : [];
+          const safe = await cloudGetSafe(key);
+          if(!safe.ok) throw new Error('entries fetch failed');
+          const raw = safe.value ? JSON.parse(safe.value) : [];
           const parsed = parseEntriesPayload(raw);
           // Re-check AFTER the await, not just before it — a clear can
           // start WHILE this fetch is in flight, and without re-checking,
@@ -951,7 +963,22 @@ async function saveEntries(dayLabel, suffix){
             deletedEntryIdsByDay[key] = mergedDeleted;
             entries = entries.filter(e=>!belongsHere(e)).concat(mergedForPartition);
           }
-        }catch(e){}
+        }catch(e){
+          // The fetch failed (not "this key is empty") — proceeding to
+          // save below would overwrite the backend with ONLY this
+          // device's local entries for this partition, silently dropping
+          // any other evaluator's reps the backend already had that this
+          // device hasn't synced yet. Confirmed directly as a real,
+          // serious risk: this runs on every single logged rep, and a
+          // transient timeout (which we've seen happen, e.g. right after
+          // a backend redeploy) would previously have been indistinguishable
+          // from "no one else has logged here yet." Skipping the merge
+          // on a genuine failure means this save still goes out (so the
+          // just-logged rep itself isn't lost from THIS device), but
+          // doesn't pretend to know what else belongs in this partition —
+          // the next successful backgroundSync poll (within ~8s) is what
+          // reconciles anything this save couldn't safely account for.
+        }
       }
       const partitionEntries = entries.filter(belongsHere);
       const payload = JSON.stringify({
@@ -1825,6 +1852,60 @@ function exportStationResultsCsv(){
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+// ---------------------------------------------------------------
+// TEST TOOLS LOCK — with real, live event data now in the system, the
+// simulation/reset tools (which can add fake athletes and entries, or
+// permanently clear real data) are hidden behind an explicit unlock
+// step rather than sitting one tap away under a details toggle. Not
+// meant as real security (anyone could read the phrase from this file)
+// — it's a deliberate friction step so nobody clears or pollutes live
+// data by an absent-minded tap during a real session. Deliberately not
+// persisted (resets to locked on every reload), so a device left open
+// doesn't stay unlocked indefinitely.
+// ---------------------------------------------------------------
+state.testToolsUnlocked = false;
+state.testToolsUnlockInput = '';
+const TEST_TOOLS_UNLOCK_PHRASE = 'unlock test tools';
+function testToolsGateHtml(bodyHtml, idPrefix){
+  if(!state.testToolsUnlocked){
+    return `<div class="card">
+      <button class="toggle-link" id="${idPrefix}UnlockToggle">🔒 Test / Admin Tools (hidden — tap to unlock)</button>
+      <div id="${idPrefix}UnlockPanel" style="display:none;margin-top:10px">
+        <p class="focus">These tools can add fake athletes/entries or permanently clear real synced data. Type "${TEST_TOOLS_UNLOCK_PHRASE}" below to reveal them.</p>
+        <div class="filterbar">
+          <input id="${idPrefix}UnlockInput" placeholder="Type to unlock" value="${escapeHtml(state.testToolsUnlockInput)}">
+          <button class="ghost" id="${idPrefix}UnlockBtn" style="flex:0 0 auto">Unlock</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `<details class="card dangerzone" open><summary>⚠ Test / Admin Tools (unlocked)</summary>
+    <p class="focus" style="margin-top:8px;color:var(--flag);font-weight:700">These can add fake data or permanently delete real synced data. Use carefully.</p>
+    ${bodyHtml}
+    <div class="rowrow" style="margin-top:10px"><button class="ghost" id="${idPrefix}LockBtn">Lock Test Tools</button></div>
+  </details>`;
+}
+function wireTestToolsGate(idPrefix, rerender){
+  const toggle = document.getElementById(`${idPrefix}UnlockToggle`);
+  if(toggle) toggle.onclick = ()=>{
+    const panel = document.getElementById(`${idPrefix}UnlockPanel`);
+    if(panel) panel.style.display = panel.style.display==='none' ? 'block' : 'none';
+  };
+  const input = document.getElementById(`${idPrefix}UnlockInput`);
+  if(input) input.oninput = (e)=>{ state.testToolsUnlockInput = e.target.value; };
+  const unlockBtn = document.getElementById(`${idPrefix}UnlockBtn`);
+  if(unlockBtn) unlockBtn.onclick = ()=>{
+    if(state.testToolsUnlockInput.trim().toLowerCase() === TEST_TOOLS_UNLOCK_PHRASE){
+      state.testToolsUnlocked = true;
+      state.testToolsUnlockInput = '';
+      rerender();
+    } else {
+      toast("Phrase didn't match — test tools stay locked");
+    }
+  };
+  const lockBtn = document.getElementById(`${idPrefix}LockBtn`);
+  if(lockBtn) lockBtn.onclick = ()=>{ state.testToolsUnlocked = false; rerender(); };
+}
 function renderCoachDashboard(){
   const main = document.getElementById('mainArea');
   const counts = sessionCounts();
@@ -1835,7 +1916,7 @@ function renderCoachDashboard(){
     <span id="rosterDiagLine" style="font-size:11px;color:var(--grey);font-family:ui-monospace,monospace;display:block">${rosterDiagText()}</span>
     <span id="entriesDiagLine" style="font-size:11px;color:var(--grey);font-family:ui-monospace,monospace;display:block;margin-top:4px">${entriesDiagText()}</span>
   </div>
-  <details class="card"><summary>Test Tools (dry-run before tryout day)</summary>
+  ` + testToolsGateHtml(`
     <p class="focus" style="margin-top:8px">Simulates every currently-registered athlete (falls back to the 27-person seed roster if nobody's registered yet). Entries use evaluators EV1–EV5 (one per station) plus EV-SCRIM for scrimmage/TCS, so they're easy to spot and clear before the real thing.</p>
     <div class="filterbar">
       <select id="simSession">` +
@@ -1845,7 +1926,7 @@ function renderCoachDashboard(){
       <button id="simRunAllBtn">Simulate All 7 Days</button>
     </div>
     <div class="exportbar"><button id="clearBtn">Clear All Synced Data</button></div>
-  </details>
+  `, 'coach') + `
 
   <div class="card"><h2>Live Totals</h2>
     <p class="focus">Entries synced from every evaluator's tablet, updated automatically every few seconds.</p>
@@ -1907,12 +1988,19 @@ function renderCoachDashboard(){
   document.getElementById('filterType').onchange = (e)=>{ coachFilters.type = e.target.value; renderCoachLog(); };
   document.getElementById('coachRefreshBtn').onclick = refreshFromCloud;
   document.getElementById('coachExportBtn').onclick = exportCsv;
-  document.getElementById('simRunBtn').onclick = ()=>{
+  // These only exist in the DOM when Test Tools is unlocked — guarded
+  // since testToolsGateHtml renders nothing but the unlock prompt
+  // otherwise.
+  const simRunBtn = document.getElementById('simRunBtn');
+  if(simRunBtn) simRunBtn.onclick = ()=>{
     const s = parseInt(document.getElementById('simSession').value);
     runSimulation(s);
   };
-  document.getElementById('simRunAllBtn').onclick = runSimulationAllSessions;
-  document.getElementById('clearBtn').onclick = clearAllEntries;
+  const simRunAllBtn = document.getElementById('simRunAllBtn');
+  if(simRunAllBtn) simRunAllBtn.onclick = runSimulationAllSessions;
+  const clearBtn = document.getElementById('clearBtn');
+  if(clearBtn) clearBtn.onclick = clearAllEntries;
+  wireTestToolsGate('coach', renderCoachDashboard);
   document.getElementById('resultsDaySelect').onchange = (e)=>{
     coachFilters.resultsDay = e.target.value;
     coachFilters.resultsStation = ''; // reset so it falls back to a valid option for the new day
@@ -2432,8 +2520,17 @@ async function loadOrUpdateRoster(text){
         const paid = paidVal===true;
         const listNumTaken = current.some(a=>a.listNum===p.listNum);
         const safeListNum = listNumTaken ? uniqueListNum(current) : p.listNum;
-        current.push({ listNum:safeListNum, name:p.name, year:p.year, pos:p.pos,
-          pinny:null, pinnyAssignedAt:null, paid, paidAt: paid?new Date().toISOString():null, attendance:{} });
+        const newAthlete = { listNum:safeListNum, name:p.name, year:p.year, pos:p.pos,
+          pinny:null, pinnyAssignedAt:null, paid, paidAt: paid?new Date().toISOString():null, attendance:{} };
+        current.push(newAthlete);
+        // Register this newly-created athlete in byName immediately —
+        // without this, a name appearing TWICE within the same pasted
+        // list (a duplicate row in the source spreadsheet) creates two
+        // separate records instead of the second row correctly matching
+        // the first, since byName was only ever built from the roster
+        // as it stood BEFORE this paste started. Confirmed directly as
+        // the mechanism behind a real duplicate athlete record.
+        byName.set(key, newAthlete);
         if(paidVal !== undefined) paidStatusesSet++;
       }
     });
@@ -2788,10 +2885,10 @@ function renderCheckinMainImpl(){
   const pinniesAssigned = roster.filter(a=>a.pinny).length;
   const paidCount = roster.filter(a=>a.paid).length;
 
-  let html = `<details class="card"><summary>Test Tools (dry-run before tryout day)</summary>
+  let html = testToolsGateHtml(`
     <p class="focus" style="margin-top:8px">Registers the 27-athlete roster plus 20 simulated on-site walk-ins, each checked in for ${day} with a random unique 1–3 digit pinnie (not sequential — mirrors real walk-in registration order).</p>
     <div class="rowrow"><button class="logbtn" id="simRegBtn" style="width:auto;padding:11px 16px">Simulate Registration (27 + 20 walk-ins)</button></div>
-  </details>
+  `, 'checkinSim') + `
 
   <div class="card">
     <h2>Add Walk-On</h2>
@@ -2821,7 +2918,9 @@ function renderCheckinMainImpl(){
   if(!roster.length){
     html += `<div class="card"><p class="empty">No roster loaded yet. Paste your athlete list above, or add a walk-on above, to get started.</p></div>`;
     main.innerHTML = html;
-    document.getElementById('simRegBtn').onclick = simulateRegistration;
+    const simRegBtnEmpty = document.getElementById('simRegBtn');
+    if(simRegBtnEmpty) simRegBtnEmpty.onclick = simulateRegistration;
+    wireTestToolsGate('checkinSim', renderCheckinMain);
     wireWalkOnInputs();
     document.getElementById('toggleLoaderBtn').onclick = ()=>{ state.checkinShowLoader = !state.checkinShowLoader; renderCheckinMain(); };
     const loadBtn = document.getElementById('loadRosterBtn');
@@ -2850,14 +2949,16 @@ function renderCheckinMainImpl(){
     </div>
   </div>
 
-  <div class="card dangerzone"><h2>Reset</h2>
-    <p class="focus">Wipes the entire roster, pinnie assignments, and all check-in history across every day. Use only before the tryout starts.</p>
+  ` + testToolsGateHtml(`
+    <p class="focus" style="margin-top:8px;color:var(--flag)">Wipes the entire roster, pinnie assignments, and all check-in history across every day. Use only before the tryout starts.</p>
     <button id="resetRosterBtn">Reset Everything</button>
-  </div>`;
+  `, 'checkinReset');
 
   main.innerHTML = html;
 
-  document.getElementById('simRegBtn').onclick = simulateRegistration;
+  const simRegBtnFull = document.getElementById('simRegBtn');
+  if(simRegBtnFull) simRegBtnFull.onclick = simulateRegistration;
+  wireTestToolsGate('checkinSim', renderCheckinMain);
   wireWalkOnInputs();
   document.getElementById('toggleLoaderBtn').onclick = ()=>{ state.checkinShowLoader = !state.checkinShowLoader; renderCheckinMain(); };
   const loadBtn = document.getElementById('loadRosterBtn');
@@ -2867,7 +2968,9 @@ function renderCheckinMainImpl(){
   document.getElementById('bulkCheckinBtn').onclick = bulkCheckIn;
   document.getElementById('exportCheckinBtn').onclick = exportCheckinCsv;
   document.getElementById('clearDayBtn').onclick = clearTodayCheckins;
-  document.getElementById('resetRosterBtn').onclick = resetRosterEverything;
+  const resetRosterBtn = document.getElementById('resetRosterBtn');
+  if(resetRosterBtn) resetRosterBtn.onclick = resetRosterEverything;
+  wireTestToolsGate('checkinReset', renderCheckinMain);
   wireCheckinTableRows();
 }
 // Wraps renderCheckinMainImpl so a render exception (like the
@@ -3540,6 +3643,42 @@ async function backgroundPollSharedState(){
 }
 setInterval(backgroundPollSharedState, 6000);
 
+// ---------------------------------------------------------------
+// AUTOMATIC BACKUP — periodically snapshots roster, decisions, and
+// groups (the "identity" data — who's here, what pinny, which team,
+// which decision) to a rotating set of separate keys, independent of
+// normal save/sync. This is purely additive: it never reads from these
+// keys during normal operation, so it can't introduce a new way to lose
+// or corrupt live data — it only ever writes a point-in-time copy.
+// Built after a real incident where recovering the roster meant
+// reconstructing it from a KV dump a person happened to still have
+// open in a chat — a rotating on-sheet backup makes that a direct
+// paste-back instead of a manual reconstruction next time.
+// Keeps the last BACKUP_SLOTS snapshots on a rotating cycle (oldest
+// slot gets overwritten first) rather than growing forever.
+// ---------------------------------------------------------------
+const BACKUP_SLOTS = 6;
+const BACKUP_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+function backupKeyForSlot(slot){ return `geegees-backup-slot-${slot}`; }
+async function runBackupSnapshot(){
+  try{
+    const slot = Math.floor(Date.now() / BACKUP_INTERVAL_MS) % BACKUP_SLOTS;
+    const payload = JSON.stringify({
+      snapshotAt: new Date().toISOString(),
+      roster: roster,
+      decisions: decisions,
+      groupList: groupList,
+      groupAssignments: groupAssignments
+    });
+    await storageSet(backupKeyForSlot(slot), payload, true);
+  }catch(e){ /* a missed backup is not urgent — the next scheduled one will try again */ }
+}
+setInterval(runBackupSnapshot, BACKUP_INTERVAL_MS);
+// Also snapshot once shortly after boot, once the initial load has had
+// a moment to settle, rather than waiting a full 10 minutes for the
+// first safety copy of a session's starting state.
+setTimeout(runBackupSnapshot, 30000);
+
 function groupById(id){ return groupList.find(g=>g.id===id) || null; }
 // A group's own existence can be deleted out from under a pinny's
 // assignment record (same class of issue decisionFor() guards against
@@ -3956,8 +4095,9 @@ async function backgroundSync(){
           if(batchResult === null) throw new Error('batch fetch failed');
           rawValue = batchResult[p.key];
         } else {
-          const res = await cloudGet(p.key);
-          rawValue = res ? res.value : null;
+          const safe = await cloudGetSafe(p.key);
+          if(!safe.ok) throw new Error('entries fetch failed');
+          rawValue = safe.value;
         }
         const raw = rawValue ? JSON.parse(rawValue) : [];
         const { resetToken, list: fresh, deletedIds } = parseEntriesPayload(raw);

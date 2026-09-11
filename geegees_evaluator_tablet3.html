@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r6';
+const APP_VERSION = '2026-09-10-r7';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -1868,44 +1868,214 @@ state.testToolsUnlockInput = '';
 const TEST_TOOLS_UNLOCK_PHRASE = 'unlock test tools';
 
 // ---------------------------------------------------------------
-// TEAM SELECTION PASSWORD — this tab holds sensitive, potentially
-// hurtful decisions (who's on Reserve, who's being Released) and is
-// meant to be visible to coaching staff only, not evaluators or anyone
-// who picks up a tablet. IMPORTANT LIMITATION: this is a client-side
-// gate only — the password lives in this file's own source, so it
-// stops casual/accidental access (an evaluator tapping the tab, an
-// athlete borrowing a device) but does NOT protect the underlying data
-// from anyone who inspects the page source or queries the backend
-// directly. Treat it as a deliberate barrier, not real security.
-// CHANGE THIS before your next session — this is what a coach types.
+// TEAM SELECTION — per-evaluator private recommendations, visible only
+// to that evaluator, plus a Head Coach role that sees every evaluator's
+// picks (individually and tallied) and makes the final call. Same
+// limitation as before: this is a client-side login, not real
+// authentication — the codes/passwords live in this file's own source,
+// so it stops casual cross-viewing (one evaluator peeking at another's
+// screen or tab) but not a technically determined person inspecting
+// the page source or backend directly. Each evaluator's picks are
+// stored under their own separate backend key, so their write traffic
+// never collides with anyone else's and one evaluator's device being
+// offline can't block another's saves.
 // ---------------------------------------------------------------
-const TEAM_SELECTION_PASSWORD = 'Fall20262!';
-state.teamSelectionUnlocked = false;
-state.teamSelectionPasswordInput = '';
+const TEAM_SELECTION_EVALUATORS = [
+  {code:'AH', password:'Purple'},
+  {code:'SB', password:'September'},
+  {code:'BD', password:'Football'},
+  {code:'TB', password:'Pascal'},
+  {code:'KU', password:'Sarahrules'},
+  {code:'SM', password:'Keyshawnwho'},
+  {code:'RM', password:'Warriors'}
+];
+const TEAM_SELECTION_HEAD_COACH = {code:'LB', password:'OttawaGG2'};
+function allTeamSelectionLogins(){ return [...TEAM_SELECTION_EVALUATORS, TEAM_SELECTION_HEAD_COACH]; }
+function isHeadCoachLoggedIn(){ return state.teamSelLoggedInAs === TEAM_SELECTION_HEAD_COACH.code; }
+state.teamSelLoggedInAs = null; // null | 'AH' | 'SB' | ... | 'LB'
+state.teamSelLoginCodeChoice = '';
+state.teamSelLoginPasswordInput = '';
+
+// Per-evaluator decision stores — separate in-memory objects, separate
+// backend keys, separate write chains. Deliberately NOT touching
+// `decisions`/DECISIONS_KEY/decisionsWriteChain at all: those remain
+// exactly what they were before this feature — the Head Coach's final,
+// official decision — so none of the already-tested final-decision
+// behavior changes.
+let evaluatorDecisionsByCode = {};
+let evaluatorDecisionsResetTokenByCode = {};
+let evaluatorDecisionsWriteChainByCode = {};
+function evaluatorDecisionsKeyFor(code){ return `geegees-roster-decisions-${code}`; }
+async function withFreshEvaluatorDecisions(code, mutator){
+  if(evaluatorDecisionsByCode[code] === undefined) evaluatorDecisionsByCode[code] = {};
+  // OPTIMISTIC PASS — same reasoning as withFreshDecisions.
+  try{ evaluatorDecisionsByCode[code] = mutator({...evaluatorDecisionsByCode[code]}) || evaluatorDecisionsByCode[code]; }catch(e){}
+  if(state.viewMode==='selection') renderSelectionMain();
+
+  if(!evaluatorDecisionsWriteChainByCode[code]) evaluatorDecisionsWriteChainByCode[code] = Promise.resolve();
+  evaluatorDecisionsWriteChainByCode[code] = evaluatorDecisionsWriteChainByCode[code].then(async ()=>{
+    const key = evaluatorDecisionsKeyFor(code);
+    let current, fetchedToken;
+    try{
+      const safe = await cloudGetSafe(key);
+      if(!safe.ok) throw new Error('evaluator decisions fetch failed');
+      const raw = safe.value ? JSON.parse(safe.value) : {};
+      const parsed = parseDecisionsPayload(raw);
+      current = parsed.obj; fetchedToken = parsed.resetToken;
+    }catch(e){ current = {...evaluatorDecisionsByCode[code]}; fetchedToken = evaluatorDecisionsResetTokenByCode[code] || null; }
+    const updated = mutator(current) || current;
+    // MERGE, don't overwrite — same reasoning as withFreshDecisions: a
+    // different still-in-flight click from this same evaluator (rare,
+    // but possible on a slow connection) shouldn't get erased by this one.
+    evaluatorDecisionsByCode[code] = mergeDecisions(evaluatorDecisionsByCode[code], updated);
+    evaluatorDecisionsResetTokenByCode[code] = fetchedToken;
+    try{
+      const payload = JSON.stringify({ resetToken: fetchedToken, decisions: evaluatorDecisionsByCode[code] });
+      const res = await storageSet(key, payload, true);
+      if(!res) toast('Saved locally — sync failed');
+    }catch(e){ toast('Saved locally — sync failed'); }
+    if(state.viewMode==='selection') renderSelectionMain();
+  });
+  await evaluatorDecisionsWriteChainByCode[code];
+}
+async function assignEvaluatorDecision(code, pinny, status){
+  const athlete = roster.find(r=>r.pinny===pinny);
+  await withFreshEvaluatorDecisions(code, current=>{
+    const existingNote = current[pinny] ? (current[pinny].note || '') : '';
+    current[pinny] = { status, decidedAt: new Date().toISOString(), name: athlete ? athlete.name : null, note: existingNote };
+    return current;
+  });
+}
+async function setEvaluatorDecisionNote(code, pinny, note){
+  const athlete = roster.find(r=>r.pinny===pinny);
+  await withFreshEvaluatorDecisions(code, current=>{
+    if(!current[pinny]) current[pinny] = { status:null, decidedAt:null, name: athlete?athlete.name:null, note:'' };
+    current[pinny].note = note;
+    current[pinny].name = athlete ? athlete.name : current[pinny].name;
+    return current;
+  });
+}
+async function loadEvaluatorDecisionsFor(code){
+  try{
+    const safe = await cloudGetSafe(evaluatorDecisionsKeyFor(code));
+    if(!safe.ok) throw new Error('fetch failed');
+    const raw = safe.value ? JSON.parse(safe.value) : {};
+    const parsed = parseDecisionsPayload(raw);
+    evaluatorDecisionsByCode[code] = (evaluatorDecisionsResetTokenByCode[code]===undefined || parsed.resetToken !== evaluatorDecisionsResetTokenByCode[code])
+      ? parsed.obj
+      : mergeDecisions(evaluatorDecisionsByCode[code] || {}, parsed.obj);
+    evaluatorDecisionsResetTokenByCode[code] = parsed.resetToken;
+  }catch(e){ /* leave this evaluator's in-memory data as-is */ }
+}
+// Head Coach needs everyone's picks at once — one batched request
+// instead of 7 separate ones, same reasoning as the entries batching.
+async function loadAllEvaluatorDecisionsForHeadCoach(){
+  const keys = TEAM_SELECTION_EVALUATORS.map(ev=>evaluatorDecisionsKeyFor(ev.code));
+  try{
+    const batch = await cloudGetBatch(keys);
+    if(batch === null) return;
+    TEAM_SELECTION_EVALUATORS.forEach(ev=>{
+      try{
+        const raw = batch[evaluatorDecisionsKeyFor(ev.code)];
+        const parsed = parseDecisionsPayload(raw ? JSON.parse(raw) : {});
+        evaluatorDecisionsByCode[ev.code] = parsed.obj;
+        evaluatorDecisionsResetTokenByCode[ev.code] = parsed.resetToken;
+      }catch(e){ /* leave that one evaluator's cached data as-is on a parse failure */ }
+    });
+  }catch(e){ /* leave everything as-is */ }
+}
+// Same stale-pinny-reassignment guard as decisionFor, scoped to one evaluator's own store.
+function evaluatorDecisionFor(code, pinny, currentName){
+  const d = (evaluatorDecisionsByCode[code] || {})[pinny];
+  if(!d) return null;
+  if(d.name && currentName && d.name.trim().toLowerCase() !== currentName.trim().toLowerCase()) return null;
+  return d;
+}
+// Whichever decisions object is "active" for whoever is currently
+// logged into Team Selection — every read in this section goes through
+// this so the SAME rendering code works correctly for both roles
+// without duplicating the UI.
+function activeDecisionsObj(){
+  if(isHeadCoachLoggedIn()) return decisions;
+  if(state.teamSelLoggedInAs) return evaluatorDecisionsByCode[state.teamSelLoggedInAs] || {};
+  return {};
+}
+function activeDecisionFor(pinny, currentName){
+  if(isHeadCoachLoggedIn()) return decisionFor(pinny, currentName);
+  if(state.teamSelLoggedInAs) return evaluatorDecisionFor(state.teamSelLoggedInAs, pinny, currentName);
+  return null;
+}
+async function activeAssignDecision(pinny, status){
+  if(isHeadCoachLoggedIn()) return assignDecision(pinny, status);
+  if(state.teamSelLoggedInAs) return assignEvaluatorDecision(state.teamSelLoggedInAs, pinny, status);
+}
+async function activeSetDecisionNote(pinny, note){
+  if(isHeadCoachLoggedIn()) return setDecisionNote(pinny, note);
+  if(state.teamSelLoggedInAs) return setEvaluatorDecisionNote(state.teamSelLoggedInAs, pinny, note);
+}
+const EVAL_STATUS_SHORT = {team1:'T1', team2:'T2', reserve:'Res', release:'Rel'};
+// Head-coach-only: a compact per-evaluator breakdown for one athlete —
+// each evaluator's individual pick plus a tally across all of them.
+function evaluatorRecapFor(pinny, currentName){
+  const tally = {team1:0, team2:0, reserve:0, release:0};
+  const parts = TEAM_SELECTION_EVALUATORS.map(ev=>{
+    const d = evaluatorDecisionFor(ev.code, pinny, currentName);
+    if(d && d.status) tally[d.status]++;
+    return `${ev.code}:${d && d.status ? EVAL_STATUS_SHORT[d.status] : '—'}`;
+  });
+  const tallyStr = Object.keys(tally).filter(k=>tally[k]>0).map(k=>`${EVAL_STATUS_SHORT[k]}×${tally[k]}`).join(' ') || 'No picks yet';
+  return { line: parts.join('  '), tallyStr };
+}
 function teamSelectionGateHtml(){
+  const options = TEAM_SELECTION_EVALUATORS.map(ev=>`<option value="${ev.code}" ${state.teamSelLoginCodeChoice===ev.code?'selected':''}>${ev.code}</option>`).join('')
+    + `<option value="${TEAM_SELECTION_HEAD_COACH.code}" ${state.teamSelLoginCodeChoice===TEAM_SELECTION_HEAD_COACH.code?'selected':''}>${TEAM_SELECTION_HEAD_COACH.code} (Head Coach)</option>`;
   return `<div class="card">
-    <h2>Team Selection</h2>
-    <p class="focus">This section holds sensitive team decisions (Reserve, Release, notes) and is limited to coaching staff. Enter the password to continue.</p>
+    <h2>Team Selection — Log In</h2>
+    <p class="focus">Each evaluator sees and makes only their own recommendations — no one else's are visible. The Head Coach sees every evaluator's picks and makes the final call.</p>
     <div class="filterbar">
-      <input id="teamSelPasswordInput" type="password" placeholder="Password" value="${escapeHtml(state.teamSelectionPasswordInput)}">
-      <button class="ghost" id="teamSelUnlockBtn" style="flex:0 0 auto">Unlock</button>
+      <select id="teamSelLoginCode">
+        <option value="">— Who are you? —</option>${options}
+      </select>
+      <input id="teamSelPasswordInput" type="password" placeholder="Password" value="${escapeHtml(state.teamSelLoginPasswordInput)}">
+      <button class="ghost" id="teamSelUnlockBtn" style="flex:0 0 auto">Log In</button>
     </div>
   </div>`;
 }
-function wireTeamSelectionGate(){
-  const input = document.getElementById('teamSelPasswordInput');
-  if(input) input.oninput = (e)=>{ state.teamSelectionPasswordInput = e.target.value; };
-  const btn = document.getElementById('teamSelUnlockBtn');
-  if(btn) btn.onclick = ()=>{
-    if(state.teamSelectionPasswordInput === TEAM_SELECTION_PASSWORD){
-      state.teamSelectionUnlocked = true;
-      state.teamSelectionPasswordInput = '';
-      renderSelectionMain();
-    } else {
-      toast('Incorrect password');
-    }
-  };
+async function attemptTeamSelectionLogin(){
+  const code = state.teamSelLoginCodeChoice;
+  if(!code){ toast('Pick who you are first'); return; }
+  const login = allTeamSelectionLogins().find(l=>l.code===code);
+  if(!login || state.teamSelLoginPasswordInput !== login.password){
+    toast('Incorrect password');
+    return;
+  }
+  state.teamSelLoggedInAs = code;
+  state.teamSelLoginPasswordInput = '';
+  if(code === TEAM_SELECTION_HEAD_COACH.code) await loadAllEvaluatorDecisionsForHeadCoach();
+  else await loadEvaluatorDecisionsFor(code);
+  renderSelectionMain();
 }
+function wireTeamSelectionGate(){
+  const sel = document.getElementById('teamSelLoginCode');
+  if(sel) sel.onchange = (e)=>{ state.teamSelLoginCodeChoice = e.target.value; };
+  const input = document.getElementById('teamSelPasswordInput');
+  if(input) input.oninput = (e)=>{ state.teamSelLoginPasswordInput = e.target.value; };
+  const btn = document.getElementById('teamSelUnlockBtn');
+  if(btn) btn.onclick = attemptTeamSelectionLogin;
+}
+// While actively on Team Selection and logged in, keep this device's
+// view of the relevant evaluator data(s) fresh — evaluators re-poll
+// only their own key (multi-device use by the same evaluator), Head
+// Coach re-polls everyone's, so new picks show up without a full reload.
+async function pollTeamSelectionData(){
+  if(state.viewMode !== 'selection' || !state.teamSelLoggedInAs) return;
+  if(isHeadCoachLoggedIn()) await loadAllEvaluatorDecisionsForHeadCoach();
+  else await loadEvaluatorDecisionsFor(state.teamSelLoggedInAs);
+  if(state.viewMode==='selection'){
+    if(document.getElementById('selectionTableWrap')) renderSelectionTable();
+  }
+}
+setInterval(pollTeamSelectionData, 8000);
 function testToolsGateHtml(bodyHtml, idPrefix){
   if(!state.testToolsUnlocked){
     return `<div class="card">
@@ -3235,7 +3405,7 @@ function computeSelectionMetrics(pinny){
 }
 function selectionRoster(){
   return roster.filter(a=>a.pinny).map(a=>{
-    const dec = decisionFor(a.pinny, a.name);
+    const dec = activeDecisionFor(a.pinny, a.name);
     return {
       pinny: a.pinny, name: a.name, year: a.year, pos: a.pos, paid: a.paid,
       metrics: computeSelectionMetrics(a.pinny),
@@ -3301,7 +3471,7 @@ function exportDecisionsCsv(){
   const cols = ['pinny','name','year','pos','paid','decision','decidedAt','note','skillAvg','compete','tcsAvg','repsLogged'];
   const rows = [cols.join(',')];
   selectionRoster().sort((a,b)=>a.pinny-b.pinny).forEach(a=>{
-    const dec = decisionFor(a.pinny, a.name);
+    const dec = activeDecisionFor(a.pinny, a.name);
     const row = [a.pinny, csvSafe(a.name), csvSafe(a.year), csvSafe(a.pos), a.paid?'Y':'N', dec?statusLabel(dec.status):'', dec?dec.decidedAt:'', dec?csvSafe(dec.note||''):'',
       a.metrics.skillAvg!==null? a.metrics.skillAvg.toFixed(2):'', a.metrics.compete, a.metrics.tcsAvg!==null? a.metrics.tcsAvg.toFixed(2):'', a.metrics.reps];
     rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
@@ -3328,10 +3498,12 @@ function positionBreakdown(){
   }).filter(r=>r.total>0);
 }
 function selectionTableHtml(list){
+  const headCoach = isHeadCoachLoggedIn();
   let html = `<div style="overflow-x:auto"><table class="roster"><thead><tr>
-    <th></th><th>Pinnie</th><th>Name</th><th>Position(s)</th><th>Skill</th><th>Compete</th><th>TCS</th><th>Status</th><th>Assign</th>
+    <th></th><th>Pinnie</th><th>Name</th><th>Position(s)</th><th>Skill</th><th>Compete</th><th>TCS</th>${headCoach?'<th>Evaluator Picks</th>':''}<th>Status</th><th>Assign</th>
   </tr></thead><tbody>`;
   list.forEach(a=>{
+    const recap = headCoach ? evaluatorRecapFor(a.pinny, a.name) : null;
     html += `<tr>
       <td><input type="checkbox" class="comparecheck" data-compare="${a.pinny}" ${state.compareList.includes(a.pinny)?'checked':''}></td>
       <td><span class="pinnybadge">#${a.pinny}</span></td>
@@ -3340,6 +3512,7 @@ function selectionTableHtml(list){
       <td>${fmtMetric(a.metrics.skillAvg)}</td>
       <td>${a.metrics.compete>0?'+':''}${a.metrics.compete}</td>
       <td>${fmtMetric(a.metrics.tcsAvg)}</td>
+      ${headCoach ? `<td style="font-size:11px;white-space:nowrap"><div>${escapeHtml(recap.line)}</div><div style="color:var(--grey);margin-top:2px">${escapeHtml(recap.tallyStr)}</div></td>` : ''}
       <td><span class="decisionbadge ${a.status||'undecided'}">${statusLabel(a.status)}</span></td>
       <td><div class="decidebtns">${decideButtons(a.pinny, a.status)}</div></td>
     </tr>`;
@@ -3353,7 +3526,7 @@ function wireSelectionTableRows(){
     cb.onchange = ()=> toggleCompare(parseInt(cb.dataset.compare));
   });
   document.querySelectorAll('[data-decide]').forEach(b=>{
-    b.onclick = ()=> assignDecision(parseInt(b.dataset.decide), b.dataset.status);
+    b.onclick = ()=> activeAssignDecision(parseInt(b.dataset.decide), b.dataset.status);
   });
 }
 // Table-only refresh, same reasoning as renderCheckinTable — rebuilding the
@@ -3371,19 +3544,23 @@ function renderSelectionTable(){
 }
 function renderSelectionMain(){
   const main = document.getElementById('mainArea');
-  if(!state.teamSelectionUnlocked){
+  if(!state.teamSelLoggedInAs){
     main.innerHTML = teamSelectionGateHtml();
     wireTeamSelectionGate();
     return;
   }
+  const headCoach = isHeadCoachLoggedIn();
   const list = filteredSelection();
   const all = selectionRoster();
   const counts = { team1:0, team2:0, reserve:0, release:0, undecided:0 };
   all.forEach(a=>{ if(a.status) counts[a.status]++; else counts.undecided++; });
 
-  let html = `<div class="card"><h2>Team Selection</h2>
+  let html = `<div class="card"><h2>Team Selection — ${headCoach ? 'Head Coach' : `${escapeHtml(state.teamSelLoggedInAs)} (evaluator)`}</h2>
     <p class="focus">Pulled from the Sign-In roster (identity + pinnie) joined with the skill grades, scrimmage compete score, and TCS average logged for that pinnie in Evaluator/Coach mode. Only checked-in athletes with a pinnie appear here.</p>
-    <div class="rowrow" style="margin-bottom:10px"><button class="ghost" id="teamSelLockBtn">Lock Team Selection</button></div>
+    <p class="focus">${headCoach
+      ? "Every evaluator's individual pick is shown per athlete below, with a tally. Use the Assign buttons here to make the final, official call."
+      : "These are your own private recommendations. Other evaluators can't see them, and they have no effect on the roster until the Head Coach makes the final call."}</p>
+    <div class="rowrow" style="margin-bottom:10px"><button class="ghost" id="teamSelLockBtn">Log Out</button></div>
     <div class="statgrid" style="grid-template-columns:repeat(5,1fr)">
       <div class="statbox"><span class="n">${counts.team1}</span><span class="l">Team 1</span></div>
       <div class="statbox"><span class="n">${counts.team2}</span><span class="l">Team 2</span></div>
@@ -3483,14 +3660,14 @@ function renderSelectionMain(){
   });
   document.getElementById('addCompareBtn').onclick = ()=> addToCompareByQuery(document.getElementById('compareQuery').value);
   document.querySelectorAll('[data-note]').forEach(ta=>{
-    ta.onchange = ()=> setDecisionNote(parseInt(ta.dataset.note), ta.value);
+    ta.onchange = ()=> activeSetDecisionNote(parseInt(ta.dataset.note), ta.value);
   });
   const clearCompareBtn = document.getElementById('clearCompareBtn');
   if(clearCompareBtn) clearCompareBtn.onclick = ()=>{ state.compareList=[]; renderSelectionMain(); };
   document.querySelectorAll('[data-uncompare]').forEach(b=>{
     b.onclick = ()=> toggleCompare(parseInt(b.dataset.uncompare));
   });
-  document.getElementById('teamSelLockBtn').onclick = ()=>{ state.teamSelectionUnlocked = false; renderSelectionMain(); };
+  document.getElementById('teamSelLockBtn').onclick = ()=>{ state.teamSelLoggedInAs = null; renderSelectionMain(); };
   wireSelectionTableRows();
 }
 

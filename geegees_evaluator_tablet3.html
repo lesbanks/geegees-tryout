@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r9';
+const APP_VERSION = '2026-09-10-r10';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -417,11 +417,11 @@ const SESSIONS = {
         {id:"touch",label:"Jump touch",type:"num",unit:"in",step:0.5},
         {id:"stepover",label:"Step-over foul on best attempt",type:"yn"}
       ]},
-      {name:"Double Moves + Moving Target", tag:"ROUTE", setup:"WR vs. coach DB1 (out-and-up, sluggo/slant-and-go, hitch-and-go) — WR must sell the first move before breaking vertical, 6 reps. Simultaneously: Centre snaps and releases short, covered by DB2 (5yd over); Blitzer rushes the QB from 7yd over.", fields:[
-        {id:"role",label:"Role this rep",type:"choice",options:["WR","DB2","Blitzer"]},
+      {name:"Double Moves + Moving Target", tag:"ROUTE", setup:"WR vs. coach DB1 (out-and-up, sluggo/slant-and-go, hitch-and-go) — WR must sell the first move before breaking vertical, 6 reps. Simultaneously: Centre snaps and releases short, covered by DB (5yd over); Blitzer rushes the QB from 7yd over.", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["DB","WR","C","Blitzer"]},
         {id:"rre",type:"route",routes:["Rep 1","Rep 2","Rep 3","Rep 4","Rep 5","Rep 6"]},
         {id:"separation",label:"Separation created on double move (WR)",type:"yn"},
-        {id:"coveragewin",label:"Coverage win on Centre (DB2)",type:"yn"},
+        {id:"coveragewin",label:"Coverage win on Centre (DB)",type:"yn"},
         {id:"sack",label:"Sack (Blitzer)",type:"yn"},
         {id:"pressure",label:"Pressure (Blitzer)",type:"yn"},
         {id:"penalty",label:"Penalty (Blitzer)",type:"yn"}
@@ -430,10 +430,10 @@ const SESSIONS = {
         {id:"reactions",label:"Reactions won",type:"num",unit:"/5",min:0,max:5,step:1},
         {id:"falsesteps",label:"False steps",type:"num",unit:"ct",min:0,max:5,step:1}
       ]},
-      {name:"DB Trail / Blitzer Live Blitz", tag:"DB/BLITZ", setup:"Live rep, run together: DB1 trails the WR on the double move (mark loss if the WR gets stacked — directly in front, DB1 chasing). Centre snaps and releases short, covered by DB2 (5yd over). Blitzer rushes the QB from 7yd over — pressure forces an early throw or move.", fields:[
-        {id:"role",label:"Role this rep",type:"choice",options:["DB1","DB2","Blitzer"]},
-        {id:"inphase",label:"Stayed in-phase / not stacked (DB1)",type:"yn"},
-        {id:"coveragewin",label:"Coverage win on Centre (DB2)",type:"yn"},
+      {name:"DB Trail / Blitzer Live Blitz", tag:"DB/BLITZ", setup:"Live rep, run together: DB trails the WR on the double move (mark loss if the WR gets stacked — directly in front, DB chasing). Centre snaps and releases short, covered by DB (5yd over). Blitzer rushes the QB from 7yd over — pressure forces an early throw or move.", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["DB","WR","C","Blitzer"]},
+        {id:"inphase",label:"Stayed in-phase / not stacked (DB trailing WR)",type:"yn"},
+        {id:"coveragewin",label:"Coverage win on Centre (DB covering Centre)",type:"yn"},
         {id:"sack",label:"Sack (Blitzer)",type:"yn"},
         {id:"pressure",label:"Pressure (Blitzer)",type:"yn"},
         {id:"penalty",label:"Penalty (Blitzer)",type:"yn"}
@@ -4290,14 +4290,19 @@ function wireGroupPicker(){
       state.selectedSide = b.dataset.side;
       const roleField = currentStationRoleField();
       if(roleField){
-        if(state.selectedSide==='offense' && roleField.options.includes('WR')){
-          // "WR" is the only offensive role option anywhere in the app,
-          // so this is safe to fill in directly.
-          state.values[roleField.id] = 'WR';
-        } else if(state.selectedSide==='defense' && state.values[roleField.id]==='WR'){
-          // Defense maps to two possible roles (DB or Blitzer) — can't
-          // auto-pick between them, but clear a stale "WR" selection
-          // left over from switching sides so it isn't silently wrong.
+        // "WR" and "C" are offense; "DB" and "Blitzer" are defense —
+        // confirmed directly against every station that defines a role
+        // field. Auto-fill only when exactly one candidate exists for
+        // the chosen side (this used to assume WR was the only
+        // offensive option, which broke once "C" was added as a second
+        // one); otherwise just clear a stale pick from the wrong side
+        // rather than guess which specific role applies.
+        const sideRoles = state.selectedSide==='offense' ? ['WR','C'] : ['DB','Blitzer'];
+        const candidates = roleField.options.filter(o=>sideRoles.includes(o));
+        const current = state.values[roleField.id];
+        if(candidates.length===1){
+          state.values[roleField.id] = candidates[0];
+        } else if(current && !candidates.includes(current)){
           state.values[roleField.id] = undefined;
         }
       }

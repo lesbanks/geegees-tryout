@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r8';
+const APP_VERSION = '2026-09-10-r9';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -412,27 +412,33 @@ const SESSIONS = {
     ]},
   4:{label:"D4", name:"Explosiveness", scrimmage:true,
     stations:[
-      {name:"Vertical Jump", tag:"COMBINE", setup:"Best of 3. Technique judge watches for step-over (invalidates rep).", fields:[
+      {name:"Vertical Jump", tag:"COMBINE", setup:"Best of 3 attempts. Technique Judge watches for step-over (invalidates rep). Pure athleticism metric — no ball-skill fusion.", fields:[
         {id:"reach",label:"Standing reach",type:"num",unit:"in",step:0.5},
         {id:"touch",label:"Jump touch",type:"num",unit:"in",step:0.5},
         {id:"stepover",label:"Step-over foul on best attempt",type:"yn"}
       ]},
-      {name:"Double Moves + Moving Target", tag:"ROUTE", setup:"Out-and-up, sluggo, hitch-and-go vs coach DB. 6 reps.", fields:[
+      {name:"Double Moves + Moving Target", tag:"ROUTE", setup:"WR vs. coach DB1 (out-and-up, sluggo/slant-and-go, hitch-and-go) — WR must sell the first move before breaking vertical, 6 reps. Simultaneously: Centre snaps and releases short, covered by DB2 (5yd over); Blitzer rushes the QB from 7yd over.", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["WR","DB2","Blitzer"]},
         {id:"rre",type:"route",routes:["Rep 1","Rep 2","Rep 3","Rep 4","Rep 5","Rep 6"]},
-        {id:"separation",label:"Separation created on double move",type:"yn"}
-      ]},
-      {name:"Tennis Ball Reaction", tag:"CATCH", setup:"10 reps. Coach points L/R; athlete reacts to tossed ball.", fields:[
-        {id:"reactions",label:"Reactions won",type:"num",unit:"/10",min:0,max:10,step:1},
-        {id:"falsesteps",label:"False steps",type:"num",unit:"ct",min:0,max:10,step:1}
-      ]},
-      {name:"DB Trail / Blitzer Live Blitz", tag:"DB/BLITZ", setup:"DB trails hip through double move; Blitzer rushes coach QB.", fields:[
-        {id:"role",label:"Role this rep",type:"choice",options:["DB","Blitzer"]},
-        {id:"inphase",label:"Stayed in-phase / not stacked (DB)",type:"yn"},
+        {id:"separation",label:"Separation created on double move (WR)",type:"yn"},
+        {id:"coveragewin",label:"Coverage win on Centre (DB2)",type:"yn"},
         {id:"sack",label:"Sack (Blitzer)",type:"yn"},
         {id:"pressure",label:"Pressure (Blitzer)",type:"yn"},
         {id:"penalty",label:"Penalty (Blitzer)",type:"yn"}
       ]},
-      {name:"Delayed Pursuit", tag:"PURSUIT", setup:"Defender starts 2 sec behind carrier on \u201cgo\u201d command.", fields:[
+      {name:"Tennis Ball Reaction", tag:"CATCH", setup:"5 reps total. Coach stands 5yd in front, points L/R. Reps 1-3 use a tennis ball (pure reaction test); reps 4-5 use a football (adds ball-handling demand). False step = any wrong-direction movement before the correct step.", fields:[
+        {id:"reactions",label:"Reactions won",type:"num",unit:"/5",min:0,max:5,step:1},
+        {id:"falsesteps",label:"False steps",type:"num",unit:"ct",min:0,max:5,step:1}
+      ]},
+      {name:"DB Trail / Blitzer Live Blitz", tag:"DB/BLITZ", setup:"Live rep, run together: DB1 trails the WR on the double move (mark loss if the WR gets stacked — directly in front, DB1 chasing). Centre snaps and releases short, covered by DB2 (5yd over). Blitzer rushes the QB from 7yd over — pressure forces an early throw or move.", fields:[
+        {id:"role",label:"Role this rep",type:"choice",options:["DB1","DB2","Blitzer"]},
+        {id:"inphase",label:"Stayed in-phase / not stacked (DB1)",type:"yn"},
+        {id:"coveragewin",label:"Coverage win on Centre (DB2)",type:"yn"},
+        {id:"sack",label:"Sack (Blitzer)",type:"yn"},
+        {id:"pressure",label:"Pressure (Blitzer)",type:"yn"},
+        {id:"penalty",label:"Penalty (Blitzer)",type:"yn"}
+      ]},
+      {name:"Delayed Pursuit", tag:"PURSUIT", setup:"Ball carrier starts on whistle. Defender starts 2 seconds later on \u201cgo\u201d command. Tests pure closing speed and angle discipline when trailing.", fields:[
         {id:"flags",label:"Flags",type:"num",unit:"/5",min:0,max:5,step:1},
         {id:"timetopull",label:"Time to pull",type:"num",unit:"sec",step:0.01}
       ]}

@@ -331,7 +331,7 @@
 // means someone shipped an update since this tab loaded, and every
 // tablet needs to know that immediately, not just whenever someone
 // happens to remember to refresh it.
-const APP_VERSION = '2026-09-10-r10';
+const APP_VERSION = '2026-09-10-r11';
 const SESSIONS = {
   1:{label:"D1", name:"Baseline Athleticism & Fundamentals", scrimmage:false,
     stations:[
@@ -2041,7 +2041,7 @@ async function activeSetDecisionNote(pinny, note){
   if(isHeadCoachLoggedIn()) return setDecisionNote(pinny, note);
   if(state.teamSelLoggedInAs) return setEvaluatorDecisionNote(state.teamSelLoggedInAs, pinny, note);
 }
-const EVAL_STATUS_SHORT = {team1:'T1', team2:'T2', reserve:'Res', release:'Rel'};
+const EVAL_STATUS_SHORT = {team1:'OWIFA', team2:'A OWF', reserve:'B OWF', release:'Club'};
 const KEEP_STATUSES = ['team1','team2'];
 // Head-coach-only: a compact per-evaluator breakdown for one athlete —
 // each evaluator's individual pick, a tally, how many have weighed in
@@ -3283,7 +3283,7 @@ state.compareQuery = '';
 state.compareList = [];
 state.compareMatches = [];
 
-const DECISION_LABELS = { team1:'Team 1', team2:'Team 2', reserve:'Reserve', release:'Release' };
+const DECISION_LABELS = { team1:'OWIFA', team2:'A OWF', reserve:'B OWF', release:'Club' };
 function statusLabel(status){ return DECISION_LABELS[status] || 'Undecided'; }
 
 // Same reset-token mechanism as entries/roster.
@@ -3643,14 +3643,14 @@ function renderSelectionMain(){
       : "These are your own private recommendations. Other evaluators can't see them, and they have no effect on the roster until the Head Coach makes the final call."}</p>
     <div class="rowrow" style="margin-bottom:10px"><button class="ghost" id="teamSelLockBtn">Log Out</button></div>
     <div class="statgrid" style="grid-template-columns:repeat(5,1fr)">
-      <div class="statbox"><span class="n">${counts.team1}</span><span class="l">Team 1</span></div>
-      <div class="statbox"><span class="n">${counts.team2}</span><span class="l">Team 2</span></div>
-      <div class="statbox"><span class="n">${counts.reserve}</span><span class="l">Reserve</span></div>
-      <div class="statbox"><span class="n">${counts.release}</span><span class="l">Release</span></div>
+      <div class="statbox"><span class="n">${counts.team1}</span><span class="l">OWIFA</span></div>
+      <div class="statbox"><span class="n">${counts.team2}</span><span class="l">A OWF</span></div>
+      <div class="statbox"><span class="n">${counts.reserve}</span><span class="l">B OWF</span></div>
+      <div class="statbox"><span class="n">${counts.release}</span><span class="l">Club</span></div>
       <div class="statbox"><span class="n">${counts.undecided}</span><span class="l">Undecided</span></div>
     </div>
     <div style="overflow-x:auto"><table class="roster"><thead><tr>
-      <th>Position</th><th>Total</th><th>Team 1</th><th>Team 2</th><th>Reserve</th><th>Release</th><th>Undecided</th>
+      <th>Position</th><th>Total</th><th>OWIFA</th><th>A OWF</th><th>B OWF</th><th>Club</th><th>Undecided</th>
     </tr></thead><tbody>` +
       positionBreakdown().map(r=>`<tr>
         <td><span class="rosterpos">${escapeHtml(shortPositionLabel(r.pos))}</span></td><td>${r.total}</td><td>${r.team1}</td><td>${r.team2}</td><td>${r.reserve}</td><td>${r.release}</td><td>${r.undecided}</td>
@@ -3707,10 +3707,10 @@ function renderSelectionMain(){
       <select id="selectionStatusFilter">
         <option value="all" ${state.selectionStatusFilter==='all'?'selected':''}>All statuses</option>
         <option value="undecided" ${state.selectionStatusFilter==='undecided'?'selected':''}>Undecided only</option>
-        <option value="team1" ${state.selectionStatusFilter==='team1'?'selected':''}>Team 1</option>
-        <option value="team2" ${state.selectionStatusFilter==='team2'?'selected':''}>Team 2</option>
-        <option value="reserve" ${state.selectionStatusFilter==='reserve'?'selected':''}>Reserve</option>
-        <option value="release" ${state.selectionStatusFilter==='release'?'selected':''}>Release</option>
+        <option value="team1" ${state.selectionStatusFilter==='team1'?'selected':''}>OWIFA</option>
+        <option value="team2" ${state.selectionStatusFilter==='team2'?'selected':''}>A OWF</option>
+        <option value="reserve" ${state.selectionStatusFilter==='reserve'?'selected':''}>B OWF</option>
+        <option value="release" ${state.selectionStatusFilter==='release'?'selected':''}>Club</option>
       </select>
       <select id="selectionPositionFilter">
         <option value="all" ${state.selectionPositionFilter==='all'?'selected':''}>All positions</option>` +
